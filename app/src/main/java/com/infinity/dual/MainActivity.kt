@@ -212,6 +212,8 @@ fun InfinityApp() {
     var remoteCameraFrame by remember { mutableStateOf<Bitmap?>(null) }
     var cameraStreamStatus by remember { mutableStateOf("Kamera belum dibagikan.") }
     var isSharingCamera by remember { mutableStateOf(false) }
+    var audioStreamStatus by remember { mutableStateOf("Audio belum dibagikan.") }
+    var isSharingAudio by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -225,6 +227,7 @@ fun InfinityApp() {
     val transport = remember { LanTransport() }
     val screenStreamReceiver = remember { ScreenStreamReceiver() }
     val cameraStreamReceiver = remember { CameraStreamReceiver() }
+    val audioStreamReceiver = remember { AudioStreamReceiver() }
     val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
 
@@ -401,6 +404,48 @@ fun InfinityApp() {
         cameraStreamStatus = "Camera streaming dihentikan."
     }
 
+    val launchAudioCapture: () -> Unit = {
+        try {
+            val audioIntent = Intent(context, AudioCaptureService::class.java).apply {
+                action = AudioCaptureService.ACTION_START
+                putExtra(AudioCaptureService.EXTRA_HOST, peerIp)
+                putExtra(AudioCaptureService.EXTRA_TOKEN, peerToken)
+            }
+            context.startForegroundService(audioIntent)
+            isSharingAudio = true
+            audioStreamStatus = "Memulai audio stream ke $peerIp..."
+        } catch (error: Exception) {
+            isSharingAudio = false
+            audioStreamStatus = error.message ?: "Gagal memulai audio stream."
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchAudioCapture()
+        } else {
+            audioStreamStatus = "Izin mikrofon ditolak. Audio streaming tidak dimulai."
+        }
+    }
+
+    val startAudioShare: () -> Unit = {
+        if (role != "Client" || peerIp.isBlank() || peerToken.isBlank() || !status.startsWith("Terhubung")) {
+            audioStreamStatus = "Hubungkan sebagai Client ke Master sebelum membagikan mikrofon."
+        } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            launchAudioCapture()
+        }
+    }
+
+    val stopAudioShare: () -> Unit = {
+        context.stopService(Intent(context, AudioCaptureService::class.java))
+        isSharingAudio = false
+        audioStreamStatus = "Audio streaming dihentikan."
+    }
+
     val pickFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -468,13 +513,15 @@ fun InfinityApp() {
             }
         }
     }
-    DisposableEffect(transport, screenStreamReceiver, cameraStreamReceiver) {
+    DisposableEffect(transport, screenStreamReceiver, cameraStreamReceiver, audioStreamReceiver) {
         onDispose {
             transport.close()
             screenStreamReceiver.close()
             cameraStreamReceiver.close()
+            audioStreamReceiver.close()
             context.stopService(Intent(context, ScreenCaptureService::class.java))
             context.stopService(Intent(context, CameraCaptureService::class.java))
+            context.stopService(Intent(context, AudioCaptureService::class.java))
         }
     }
 
@@ -622,8 +669,10 @@ fun InfinityApp() {
                                                         remoteScreenFrame = null
                                                         screenStreamReceiver.close()
                                                         cameraStreamReceiver.close()
+                                                        audioStreamReceiver.close()
                                                         remoteCameraFrame = null
                                                         cameraStreamStatus = "Menunggu Client membagikan kamera."
+                                                        audioStreamStatus = "Menunggu Client membagikan mikrofon."
                                                         scope.launch {
                                                             screenStreamReceiver.listen(
                                                                 token,
@@ -636,6 +685,12 @@ fun InfinityApp() {
                                                                 token,
                                                                 { frame -> remoteCameraFrame = frame },
                                                                 { streamMessage -> cameraStreamStatus = streamMessage }
+                                                            )
+                                                        }
+                                                        scope.launch {
+                                                            audioStreamReceiver.listen(
+                                                                token,
+                                                                { streamMessage -> audioStreamStatus = streamMessage }
                                                             )
                                                         }
                                                         scope.launch {
@@ -670,13 +725,17 @@ fun InfinityApp() {
                                                 transport.close()
                                                 screenStreamReceiver.close()
                                                 cameraStreamReceiver.close()
+                                                audioStreamReceiver.close()
                                                 context.stopService(Intent(context, ScreenCaptureService::class.java))
                                                 context.stopService(Intent(context, CameraCaptureService::class.java))
+                                                context.stopService(Intent(context, AudioCaptureService::class.java))
                                                 isSharingScreen = false
                                                 isSharingCamera = false
+                                                isSharingAudio = false
                                                 remoteScreenFrame = null
                                                 remoteCameraFrame = null
                                                 cameraStreamStatus = "Camera stream dihentikan."
+                                                audioStreamStatus = "Audio stream dihentikan."
                                                 pairingPayload = null
                                                 peerSession = ""
                                                 peerToken = ""
@@ -713,7 +772,7 @@ fun InfinityApp() {
                                     messages.takeLast(6).forEach { Text(it, color = Muted, fontSize = 12.sp) }
 
                                     Text(
-                                        "Keamanan LAN: pairing memakai challenge-response; pesan, transfer file, serta frame screen dan camera streaming dilindungi AES-256-GCM.",
+                                        "Keamanan LAN: pairing memakai challenge-response; pesan, transfer file, frame screen, camera, dan audio streaming dilindungi AES-256-GCM.",
                                         color = Muted,
                                         fontSize = 11.sp,
                                         lineHeight = 16.sp
@@ -768,6 +827,16 @@ fun InfinityApp() {
                                 isSharing = isSharingCamera,
                                 onStartShare = startCameraShare,
                                 onStopShare = stopCameraShare
+                            )
+                        }
+                        item {
+                            AudioStreamCard(
+                                role = role,
+                                isConnected = status.startsWith("Terhubung"),
+                                status = audioStreamStatus,
+                                isSharing = isSharingAudio,
+                                onStartShare = startAudioShare,
+                                onStopShare = stopAudioShare
                             )
                         }
                     }
@@ -904,6 +973,60 @@ private fun CameraStreamCard(
             Text(status, color = Cyan, fontSize = 12.sp)
             Text(
                 "Android meminta izin kamera dan menampilkan notifikasi permanen selama capture. Frame dienkripsi AES-GCM. Kamera berhenti saat tombol Stop ditekan atau sesi ditutup.",
+                color = Muted,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun AudioStreamCard(
+    role: String,
+    isConnected: Boolean,
+    status: String,
+    isSharing: Boolean,
+    onStartShare: () -> Unit,
+    onStopShare: () -> Unit
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Mic, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(9.dp))
+                Text("LAN AUDIO STREAM", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text(
+                "Audio satu arah dari mikrofon Client ke speaker Master. Format mono PCM 16 kHz untuk penggunaan jaringan lokal.",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            if (role == "Client") {
+                Button(
+                    onClick = onStartShare,
+                    enabled = isConnected && !isSharing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Mic, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Mulai audio stream • minta izin")
+                }
+                if (isSharing) {
+                    OutlinedButton(onClick = onStopShare, modifier = Modifier.fillMaxWidth()) {
+                        Text("Hentikan audio stream")
+                    }
+                }
+            } else {
+                Text(
+                    "HP Master memutar suara yang dikirim Client setelah pengguna Client memberi izin mikrofon dan menekan Mulai.",
+                    color = Muted,
+                    fontSize = 11.sp
+                )
+            }
+            Text(status, color = Cyan, fontSize = 12.sp)
+            Text(
+                "Audio berasal dari mikrofon, bukan audio internal aplikasi. Android meminta izin RECORD_AUDIO dan menampilkan notifikasi permanen selama mikrofon digunakan. Tekan Stop untuk mengakhiri.",
                 color = Muted,
                 fontSize = 11.sp,
                 lineHeight = 16.sp
