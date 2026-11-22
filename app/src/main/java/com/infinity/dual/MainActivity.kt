@@ -158,6 +158,8 @@ fun InfinityApp() {
     val handlePeerMessage: (String) -> Unit = { incoming ->
         if (incoming.startsWith("PAD|")) {
             remotePadStatus = "Event dari perangkat pasangan: ${incoming.removePrefix("PAD|")}"
+        } else if (incoming.startsWith("KEY|")) {
+            messages = messages + "Keyboard peer: ${incoming.removePrefix("KEY|")}"
         } else {
             messages = messages + "Peer: $incoming"
         }
@@ -411,7 +413,8 @@ fun InfinityApp() {
                         item { Text("INFINITY TOOLS", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp) }
                         item { FeatureCard("File Transfer", "Berikutnya: kirim file dengan pemilih file, progress, dan pemeriksaan checksum.", Icons.Default.Folder) }
                         item { TouchpadRelayCard(remotePadStatus, sendPadCommand) }
-                        item { FeatureCard("Remote Input", "Event touchpad dan gamepad dikirim ke aplikasi pasangan. Belum melakukan input ke aplikasi lain.", Icons.Default.Gamepad) }
+                        item { KeyboardRelayCard { text -> sendPadCommand("KEY|$text") } }
+                        item { FeatureCard("Remote Input", "Event touchpad, gamepad, dan teks dikirim ke aplikasi pasangan. Tidak mengendalikan aplikasi eksternal.", Icons.Default.Gamepad) }
                         item { SystemMonitorCard(deviceStats) }
                         item { GamepadRelayCard(remotePadStatus, sendPadCommand) }
                         item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan persetujuan tangkap layar Android.", Icons.Default.Cast) }
@@ -488,6 +491,19 @@ private fun GamepadButton(label: String, command: String, onCommand: (String) ->
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
     ) {
         Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun KeyboardRelayCard(onSend: (String) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("TEXT RELAY KEYBOARD", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            OutlinedTextField(value = text, onValueChange = { text = it.take(500) }, modifier = Modifier.fillMaxWidth(), label = { Text("Teks untuk perangkat pasangan") }, minLines = 2)
+            Button(onClick = { if (text.isNotBlank()) { onSend(text); text = "" } }, modifier = Modifier.fillMaxWidth()) { Text("Kirim teks") }
+            Text("Teks ditampilkan di dalam aplikasi pasangan; bukan mengetik otomatis pada aplikasi lain.", color = Muted, fontSize = 11.sp)
+        }
     }
 }
 
