@@ -225,10 +225,11 @@ class AudioCaptureService : Service() {
                 }
 
                 synchronized(outputLock) {
-                    if (stopping) break
-                    stream.writeInt(encrypted.size)
-                    stream.write(encrypted)
-                    stream.flush()
+                    if (!stopping) {
+                        stream.writeInt(encrypted.size)
+                        stream.write(encrypted)
+                        stream.flush()
+                    }
                 }
             }
         } finally {
