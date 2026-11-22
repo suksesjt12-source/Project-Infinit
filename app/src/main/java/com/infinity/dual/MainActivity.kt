@@ -305,6 +305,73 @@ fun InfinityApp() {
         }
     }
 
+    val pickFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                isSendingFile = true
+                fileTransferProgress = 0f
+                fileTransferStatus = "Membaca file..."
+                var transferId: String? = null
+                try {
+                    val (name, bytes) = withContext(Dispatchers.IO) { readPickedFile(context, uri) }
+                    val id = UUID.randomUUID().toString()
+                    transferId = id
+                    val encodedName = Base64.encodeToString(name.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                    val checksum = sha256Hex(bytes)
+                    check(transport.send("FILE_BEGIN|$id|$encodedName|${bytes.size}|$checksum")) {
+                        "Tidak ada koneksi aktif ke perangkat pasangan."
+                    }
+                    fileTransferStatus = "Mengirim $name • 0%"
+                    var sequence = 0
+                    for (offset in bytes.indices step FILE_CHUNK_BYTES) {
+                        val end = minOf(offset + FILE_CHUNK_BYTES, bytes.size)
+                        val chunk = bytes.copyOfRange(offset, end)
+                        val encodedChunk = Base64.encodeToString(chunk, Base64.NO_WRAP)
+                        check(transport.send("FILE_CHUNK|$id|$sequence|$encodedChunk")) {
+                            "Koneksi terputus saat mengirim file."
+                        }
+                        sequence += 1
+                        fileTransferProgress = end.toFloat() / bytes.size.coerceAtLeast(1).toFloat()
+                        if (sequence % 32 == 0 || end == bytes.size) {
+                            fileTransferStatus = "Mengirim $name • ${(fileTransferProgress * 100).toInt()}%"
+                        }
+                    }
+                    check(transport.send("FILE_END|$id")) { "Koneksi terputus sebelum transfer selesai." }
+                    fileTransferProgress = 1f
+                    fileTransferStatus = "Pengiriman $name selesai. Menunggu verifikasi di HP penerima."
+                } catch (error: Exception) {
+                    transferId?.let { transport.send("FILE_CANCEL|$it") }
+                    fileTransferStatus = error.message ?: "Transfer file gagal."
+                } finally {
+                    isSendingFile = false
+                }
+            }
+        }
+    }
+
+    val saveReceivedLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        val received = pendingReceivedFile
+        if (uri != null && received != null) {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { output ->
+                            output.write(received.bytes)
+                            output.flush()
+                        } ?: throw IOException("Lokasi penyimpanan tidak dapat dibuka.")
+                    }
+                    fileTransferStatus = "File ${received.name} berhasil disimpan."
+                    pendingReceivedFile = null
+                } catch (error: Exception) {
+                    fileTransferStatus = error.message ?: "Gagal menyimpan file."
+                }
+            }
+        }
+    }
     DisposableEffect(transport) {
         onDispose { transport.close() }
     }
@@ -526,7 +593,18 @@ fun InfinityApp() {
                     }
                     else -> {
                         item { Text("INFINITY TOOLS", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp) }
-                        item { FeatureCard("File Transfer", "Berikutnya: kirim file dengan pemilih file, progress, dan pemeriksaan checksum.", Icons.Default.Folder) }
+                        item {
+                            FileTransferCard(
+                                status = fileTransferStatus,
+                                progress = fileTransferProgress,
+                                isSending = isSendingFile,
+                                isConnected = status.startsWith("Terhubung"),
+                                incomingName = pendingReceivedFile?.name,
+                                incomingSize = pendingReceivedFile?.bytes?.size,
+                                onPickFile = { pickFileLauncher.launch(arrayOf("*/*")) },
+                                onSaveIncoming = { pendingReceivedFile?.let { saveReceivedLauncher.launch(it.name) } }
+                            )
+                        }
                         item { TouchpadRelayCard(remotePadStatus, sendPadCommand) }
                         item { KeyboardRelayCard { text -> sendPadCommand("KEY|$text") } }
                         item { FeatureCard("Remote Input", "Event touchpad, gamepad, dan teks dikirim ke aplikasi pasangan. Tidak mengendalikan aplikasi eksternal.", Icons.Default.Gamepad) }
@@ -549,6 +627,49 @@ fun InfinityApp() {
 
 
 
+
+@Composable
+private fun FileTransferCard(
+    status: String,
+    progress: Float,
+    isSending: Boolean,
+    isConnected: Boolean,
+    incomingName: String?,
+    incomingSize: Int?,
+    onPickFile: () -> Unit,
+    onSaveIncoming: () -> Unit
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Folder, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(9.dp))
+                Text("LAN FILE TRANSFER", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("Kirim file langsung antar-HP melalui Wi-Fi lokal. Maksimal 8 MB per file.", color = Muted, fontSize = 12.sp)
+            Button(onClick = onPickFile, enabled = isConnected && !isSending && incomingName == null, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.UploadFile, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(if (isSending) "Sedang mengirim..." else "Pilih & kirim file")
+            }
+            if (isSending || progress > 0f) {
+                LinearProgressIndicator(progress = progress.coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth())
+            }
+            Text(status, color = Cyan, fontSize = 12.sp, lineHeight = 17.sp)
+            if (incomingName != null && incomingSize != null) {
+                Divider(color = Muted.copy(alpha = .25f))
+                Text("File masuk siap disimpan", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("$incomingName • $incomingSize byte", color = Muted, fontSize = 12.sp)
+                Button(onClick = onSaveIncoming, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.SaveAlt, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Simpan File")
+                }
+            }
+            Text("Penerima memilih sendiri lokasi simpan. Data diperiksa dengan SHA-256 sebelum disimpan. File sementara dibatasi 8 MB dan transfer belum dienkripsi.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
+    }
+}
 @Composable
 private fun GamepadRelayCard(status: String, onCommand: (String) -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
