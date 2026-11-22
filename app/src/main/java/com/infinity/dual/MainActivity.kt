@@ -559,7 +559,7 @@ fun InfinityApp() {
                             Text("INFINITY", fontSize = 29.sp, fontWeight = FontWeight.Black, color = Color.White)
                         }
                         Surface(color = Cyan.copy(alpha = .12f), shape = RoundedCornerShape(20.dp)) {
-                            Text("v1.4.0 • CAMERA STREAM", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("v1.5.0 • AUDIO STREAM", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
