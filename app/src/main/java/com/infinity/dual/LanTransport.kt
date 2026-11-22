@@ -150,6 +150,7 @@ class LanTransport {
         while (!explicitlyClosed) {
             var peer: Socket? = null
             var retry = false
+            var retryReason = "perangkat terputus"
             try {
                 val connectedPeer = Socket()
                 peer = connectedPeer
@@ -192,17 +193,7 @@ class LanTransport {
                 break
             } catch (error: Exception) {
                 retry = !explicitlyClosed
-                if (retry) {
-                    attempt += 1
-                    val waitMs = retryDelay(attempt)
-                    withContext(Dispatchers.Main) {
-                        onStatus(
-                            "Koneksi gagal • mencoba ulang ke $host dalam ${waitMs / 1000} dtk " +
-                                "(percobaan $attempt)"
-                        )
-                    }
-                    delay(waitMs)
-                }
+                retryReason = error.message ?: "kesalahan jaringan"
             } finally {
                 val endedPeer = peer
                 if (endedPeer != null) {
@@ -219,7 +210,7 @@ class LanTransport {
                 val waitMs = retryDelay(attempt)
                 withContext(Dispatchers.Main) {
                     onStatus(
-                        "Koneksi terputus • menyambung ulang ke $host dalam " +
+                        "Koneksi $retryReason • menyambung ulang ke $host dalam " +
                             "${waitMs / 1000} dtk (percobaan $attempt)"
                     )
                 }
