@@ -19,6 +19,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -408,7 +410,8 @@ fun InfinityApp() {
                     else -> {
                         item { Text("INFINITY TOOLS", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp) }
                         item { FeatureCard("File Transfer", "Berikutnya: kirim file dengan pemilih file, progress, dan pemeriksaan checksum.", Icons.Default.Folder) }
-                        item { FeatureCard("Remote Input", "Touchpad, keyboard, dan gamepad dalam aplikasi dengan izin eksplisit.", Icons.Default.Gamepad) }
+                        item { TouchpadRelayCard(remotePadStatus, sendPadCommand) }
+                        item { FeatureCard("Remote Input", "Event touchpad dan gamepad dikirim ke aplikasi pasangan. Belum melakukan input ke aplikasi lain.", Icons.Default.Gamepad) }
                         item { SystemMonitorCard(deviceStats) }
                         item { GamepadRelayCard(remotePadStatus, sendPadCommand) }
                         item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan persetujuan tangkap layar Android.", Icons.Default.Cast) }
@@ -485,6 +488,43 @@ private fun GamepadButton(label: String, command: String, onCommand: (String) ->
         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
     ) {
         Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun TouchpadRelayCard(status: String, onCommand: (String) -> Unit) {
+    var lastX by remember { mutableStateOf(0f) }
+    var lastY by remember { mutableStateOf(0f) }
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.TouchApp, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(8.dp))
+                Text("LAN TOUCHPAD", color = Cyan, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+            Box(
+                Modifier.fillMaxWidth().height(190.dp).background(Color(0xFF0B1727), RoundedCornerShape(14.dp))
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { onCommand("TOUCH|DOWN") },
+                            onDragEnd = { onCommand("TOUCH|UP") },
+                            onDragCancel = { onCommand("TOUCH|CANCEL") }
+                        ) { change, dragAmount ->
+                            change.consume()
+                            lastX = (lastX + dragAmount.x / size.width).coerceIn(0f, 1f)
+                            lastY = (lastY + dragAmount.y / size.height).coerceIn(0f, 1f)
+                            onCommand("TOUCH|MOVE|${(lastX * 1000).toInt()}|${(lastY * 1000).toInt()}")
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) { Text("Geser di area ini\nuntuk mengirim koordinat touchpad", color = Muted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, fontSize = 12.sp) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { onCommand("TOUCH|CLICK") }, modifier = Modifier.weight(1f)) { Text("Klik kiri") }
+                OutlinedButton(onClick = { onCommand("TOUCH|RIGHT") }, modifier = Modifier.weight(1f)) { Text("Klik kanan") }
+            }
+            Text(status, color = Cyan, fontSize = 12.sp)
+            Text("Touchpad ini hanya mengirim event ke aplikasi PROJECT INFINITY di HP pasangan, bukan mengendalikan layar Android atau game eksternal.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
     }
 }
 
