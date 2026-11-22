@@ -871,11 +871,20 @@ fun InfinityApp() {
                                 status = fileTransferStatus,
                                 progress = fileTransferProgress,
                                 isSending = isSendingFile,
+                                isReceiving = incomingTransfer != null,
                                 isConnected = status.startsWith("Terhubung"),
                                 incomingName = pendingReceivedFile?.name,
                                 incomingSize = pendingReceivedFile?.bytes?.size,
                                 onPickFile = { pickFileLauncher.launch(arrayOf("*/*")) },
                                 onCancelSend = { if (isSendingFile) { cancelFileTransferRequested = true; fileTransferStatus = "Membatalkan transfer..." } },
+                                onCancelReceive = {
+                                    incomingTransfer?.let { active ->
+                                        incomingTransfer = null
+                                        fileTransferProgress = 0f
+                                        fileTransferStatus = "Penerimaan dibatalkan."
+                                        scope.launch { transport.send("FILE_CANCEL|${active.id}") }
+                                    }
+                                },
                                 onSaveIncoming = { pendingReceivedFile?.let { saveReceivedLauncher.launch(it.name) } }
                             )
                         }
@@ -1125,11 +1134,13 @@ private fun FileTransferCard(
     status: String,
     progress: Float,
     isSending: Boolean,
+    isReceiving: Boolean,
     isConnected: Boolean,
     incomingName: String?,
     incomingSize: Int?,
     onPickFile: () -> Unit,
     onCancelSend: () -> Unit,
+    onCancelReceive: () -> Unit,
     onSaveIncoming: () -> Unit
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
@@ -1153,6 +1164,13 @@ private fun FileTransferCard(
                     Icon(Icons.Default.Cancel, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Batalkan pengiriman")
+                }
+            }
+            if (isReceiving) {
+                OutlinedButton(onClick = onCancelReceive, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Cancel, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Batalkan penerimaan")
                 }
             }
             Text(status, color = Cyan, fontSize = 12.sp, lineHeight = 17.sp)
