@@ -1,10 +1,15 @@
 package com.infinity.dual
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.wifi.WifiManager
 import android.os.Bundle
+import android.os.BatteryManager
+import android.os.Build
+import android.os.Environment
+import android.os.StatFs
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -31,6 +36,8 @@ import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.integration.android.IntentIntegrator
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import java.util.UUID
@@ -46,6 +53,35 @@ private data class PairingDetails(
     val session: String,
     val token: String
 )
+
+private data class DeviceStats(
+    val model: String,
+    val androidVersion: String,
+    val batteryPercent: Int?,
+    val availableRamMb: Long,
+    val totalRamMb: Long,
+    val freeStorageMb: Long
+)
+
+private fun readDeviceStats(context: Context): DeviceStats {
+    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    val memory = ActivityManager.MemoryInfo()
+    activityManager.getMemoryInfo(memory)
+
+    val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+    val batteryValue = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    val battery = batteryValue.takeIf { it in 0..100 }
+
+    val storage = StatFs(Environment.getDataDirectory().path)
+    return DeviceStats(
+        model = Build.MODEL ?: "Perangkat Android",
+        androidVersion = Build.VERSION.RELEASE ?: "Tidak diketahui",
+        batteryPercent = battery,
+        availableRamMb = memory.availMem / (1024L * 1024L),
+        totalRamMb = memory.totalMem / (1024L * 1024L),
+        freeStorageMb = storage.availableBytes / (1024L * 1024L)
+    )
+}
 
 private fun parsePairingPayload(raw: String): PairingDetails? {
     val parts = raw.trim().split('|')
@@ -105,6 +141,13 @@ fun InfinityApp() {
 
     val context = LocalContext.current
     val activity = context as? Activity
+    var deviceStats by remember { mutableStateOf(readDeviceStats(context)) }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            deviceStats = readDeviceStats(context)
+            delay(5_000)
+        }
+    }
     val transport = remember { LanTransport() }
     val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
@@ -348,7 +391,7 @@ fun InfinityApp() {
                         item { Text("INFINITY TOOLS", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp) }
                         item { FeatureCard("File Transfer", "Berikutnya: kirim file dengan pemilih file, progress, dan pemeriksaan checksum.", Icons.Default.Folder) }
                         item { FeatureCard("Remote Input", "Touchpad, keyboard, dan gamepad dalam aplikasi dengan izin eksplisit.", Icons.Default.Gamepad) }
-                        item { FeatureCard("System Monitor", "Informasi perangkat yang disediakan Android, seperti RAM, baterai, dan jaringan.", Icons.Default.MonitorHeart) }
+                        item { SystemMonitorCard(deviceStats) }
                         item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan persetujuan tangkap layar Android.", Icons.Default.Cast) }
                         item { FeatureCard("Camera Link", "Akses kamera hanya setelah izin kamera diberikan.", Icons.Default.PhotoCamera) }
                     }
@@ -361,6 +404,41 @@ fun InfinityApp() {
             text = { Text("1. Pasang aplikasi pada kedua HP.\n2. Hubungkan keduanya ke Wi-Fi atau hotspot yang sama.\n3. Pada HP pertama pilih Master lalu tekan Host / Buat QR.\n4. Pada HP kedua pilih Client, pindai QR Master, lalu tekan Connect.\n5. Setelah status Terhubung muncul, uji fitur pesan.\n\nPairing memerlukan jaringan lokal yang mengizinkan koneksi antarperangkat.") },
             confirmButton = { TextButton(onClick = { showPair = false }) { Text("Mengerti") } }
         )
+    }
+}
+
+
+@Composable
+private fun SystemMonitorCard(stats: DeviceStats) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.MonitorHeart, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("SYSTEM MONITOR", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(stats.model, color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            Text("Android ${stats.androidVersion} • pembaruan otomatis setiap 5 detik", color = Muted, fontSize = 11.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricCard("BATTERY", stats.batteryPercent?.let { "$it%" } ?: "N/A", Icons.Default.BatteryChargingFull, Modifier.weight(1f))
+                MetricCard("RAM FREE", "${stats.availableRamMb} MB", Icons.Default.Memory, Modifier.weight(1f))
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MetricCard("RAM TOTAL", "${stats.totalRamMb} MB", Icons.Default.DeveloperBoard, Modifier.weight(1f))
+                MetricCard("STORAGE FREE", "${stats.freeStorageMb} MB", Icons.Default.Storage, Modifier.weight(1f))
+            }
+            Text(
+                "Angka RAM adalah informasi memori sistem yang dilaporkan Android. Monitor ini tidak mengubah frekuensi CPU/GPU atau performa perangkat.",
+                color = Muted,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
     }
 }
 
