@@ -196,6 +196,11 @@ fun InfinityApp() {
     var chatInput by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf(listOf<String>()) }
     var remotePadStatus by remember { mutableStateOf("Belum ada event gamepad diterima") }
+    var incomingTransfer by remember { mutableStateOf<IncomingFileTransfer?>(null) }
+    var pendingReceivedFile by remember { mutableStateOf<ReceivedFile?>(null) }
+    var fileTransferStatus by remember { mutableStateOf("Pilih file setelah kedua HP terhubung.") }
+    var fileTransferProgress by remember { mutableStateOf(0f) }
+    var isSendingFile by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -211,12 +216,67 @@ fun InfinityApp() {
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
 
     val handlePeerMessage: (String) -> Unit = { incoming ->
-        if (incoming.startsWith("PAD|")) {
-            remotePadStatus = "Event dari perangkat pasangan: ${incoming.removePrefix("PAD|")}"
-        } else if (incoming.startsWith("KEY|")) {
-            messages = messages + "Keyboard peer: ${incoming.removePrefix("KEY|")}"
-        } else {
-            messages = messages + "Peer: $incoming"
+        val parts = incoming.split('|')
+        when (parts.firstOrNull()) {
+            "FILE_BEGIN" -> {
+                if (parts.size == 5 && incomingTransfer == null && pendingReceivedFile == null) {
+                    val id = parts[1]
+                    val size = parts[3].toLongOrNull()
+                    val hash = parts[4]
+                    val decodedName = runCatching { String(Base64.decode(parts[2], Base64.DEFAULT), Charsets.UTF_8) }.getOrNull()
+                    if (id.matches(Regex("[A-Fa-f0-9-]{8,40}")) && size != null &&
+                        size in 0..MAX_FILE_TRANSFER_BYTES.toLong() && hash.matches(Regex("[a-fA-F0-9]{64}")) &&
+                        !decodedName.isNullOrBlank()) {
+                        val safeName = safeTransferFileName(decodedName)
+                        incomingTransfer = IncomingFileTransfer(id, safeName, size, hash.lowercase(), ByteArrayOutputStream())
+                        fileTransferProgress = 0f
+                        fileTransferStatus = "Menerima $safeName • 0%"
+                    } else fileTransferStatus = "Transfer ditolak: metadata file tidak valid."
+                } else fileTransferStatus = "Transfer ditolak: masih ada file yang sedang diproses."
+            }
+            "FILE_CHUNK" -> {
+                val active = incomingTransfer
+                if (parts.size == 4 && active != null && parts[1] == active.id) {
+                    val sequence = parts[2].toIntOrNull()
+                    val chunk = runCatching { Base64.decode(parts[3], Base64.DEFAULT) }.getOrNull()
+                    if (sequence == active.nextSequence && chunk != null &&
+                        active.buffer.size().toLong() + chunk.size <= active.expectedSize &&
+                        active.buffer.size().toLong() + chunk.size <= MAX_FILE_TRANSFER_BYTES) {
+                        active.buffer.write(chunk)
+                        active.nextSequence += 1
+                        val received = active.buffer.size()
+                        fileTransferProgress = if (active.expectedSize == 0L) 1f else
+                            (received.toFloat() / active.expectedSize.toFloat()).coerceIn(0f, 1f)
+                        if (received % (256 * 1024) < FILE_CHUNK_BYTES || received.toLong() == active.expectedSize) {
+                            fileTransferStatus = "Menerima ${active.name} • ${(fileTransferProgress * 100).toInt()}%"
+                        }
+                    } else {
+                        incomingTransfer = null
+                        fileTransferProgress = 0f
+                        fileTransferStatus = "Transfer dibatalkan: urutan atau ukuran data tidak valid."
+                    }
+                }
+            }
+            "FILE_END" -> {
+                val active = incomingTransfer
+                if (parts.size == 2 && active != null && parts[1] == active.id) {
+                    val bytes = active.buffer.toByteArray()
+                    if (bytes.size.toLong() == active.expectedSize && sha256Hex(bytes).equals(active.expectedSha256, ignoreCase = true)) {
+                        pendingReceivedFile = ReceivedFile(active.name, bytes)
+                        fileTransferProgress = 1f
+                        fileTransferStatus = "File diterima dan checksum cocok. Tekan Simpan File."
+                    } else fileTransferStatus = "File gagal diverifikasi. Data tidak disimpan."
+                    incomingTransfer = null
+                }
+            }
+            "FILE_CANCEL" -> {
+                incomingTransfer = null
+                fileTransferProgress = 0f
+                fileTransferStatus = "Pengirim membatalkan transfer."
+            }
+            "PAD" -> remotePadStatus = "Event dari perangkat pasangan: ${parts.drop(1).joinToString("|")}"
+            "KEY" -> messages = messages + "Keyboard peer: ${incoming.removePrefix("KEY|")}"
+            else -> messages = messages + "Peer: $incoming"
         }
     }
     val sendPadCommand: (String) -> Unit = { command ->
