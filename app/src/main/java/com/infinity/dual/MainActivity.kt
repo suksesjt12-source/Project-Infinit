@@ -3,6 +3,9 @@ package com.infinity.dual
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
 import android.graphics.Bitmap
 import android.net.wifi.WifiManager
 import android.os.Bundle
@@ -38,9 +41,14 @@ import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.integration.android.IntentIntegrator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 
@@ -112,6 +120,53 @@ private fun localWifiIpv4(context: Context): String? {
     return (0..3).joinToString(".") { shift ->
         ((address shr (shift * 8)) and 0xff).toString()
     }
+}
+
+private const val MAX_FILE_TRANSFER_BYTES = 8 * 1024 * 1024
+private const val FILE_CHUNK_BYTES = 1024
+
+private data class IncomingFileTransfer(
+    val id: String,
+    val name: String,
+    val expectedSize: Long,
+    val expectedSha256: String,
+    val buffer: ByteArrayOutputStream,
+    var nextSequence: Int = 0
+)
+
+private data class ReceivedFile(val name: String, val bytes: ByteArray)
+
+private fun safeTransferFileName(input: String): String {
+    val leaf = input.substringAfterLast('/').substringAfterLast('\\')
+    return leaf.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        .trim().take(100).ifBlank { "infinity-file" }
+}
+
+private fun sha256Hex(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes)
+        .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+
+private fun readPickedFile(context: Context, uri: Uri): Pair<String, ByteArray> {
+    val displayName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+    }
+    val name = safeTransferFileName(displayName ?: uri.lastPathSegment ?: "shared-file")
+    val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(8 * 1024)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            if (count == 0) continue
+            total += count
+            require(total <= MAX_FILE_TRANSFER_BYTES) { "Ukuran file melebihi batas 8 MB." }
+            output.write(buffer, 0, count)
+        }
+        output.toByteArray()
+    } ?: throw IOException("File tidak dapat dibaca.")
+    return name to bytes
 }
 
 private fun createPairToken(): String {
