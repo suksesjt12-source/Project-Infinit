@@ -12,6 +12,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +46,11 @@ fun InfinityApp() {
     var session by remember { mutableStateOf(UUID.randomUUID().toString().take(8).uppercase()) }
     var showPair by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Belum terhubung") }
+    var peerIp by remember { mutableStateOf("") }
+    var chatInput by remember { mutableStateOf("") }
+    var messages by remember { mutableStateOf(listOf<String>()) }
+    val transport = remember { LanTransport() }
+    val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
 
     MaterialTheme(colorScheme = darkColorScheme(
@@ -105,11 +113,24 @@ fun InfinityApp() {
                                     Text("Kode sesi", color = Muted)
                                     Text(session, color = Cyan, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
                                     QrImage("INFINITY:$session:$role")
-                                    Text("QR ini adalah identitas sesi lokal untuk prototipe. Belum membuat koneksi atau mengirim data antarperangkat.", color = Muted, fontSize = 12.sp)
+                                    Text("QR sesi masih berupa identitas visual. Koneksi LAN dasar tersedia di bawah; kedua HP harus berada pada Wi-Fi/hotspot yang sama.", color = Muted, fontSize = 12.sp)
                                     OutlinedButton(onClick = { session = UUID.randomUUID().toString().take(8).uppercase(); status = "Sesi baru dibuat" }, modifier = Modifier.fillMaxWidth()) {
                                         Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Buat sesi baru")
                                     }
                                     Button(onClick = { showPair = true }, modifier = Modifier.fillMaxWidth()) { Text("Petunjuk menghubungkan") }
+                                    Divider(color = Muted.copy(alpha = .25f))
+                                    Text("KONEKSI WI-FI LOKAL", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text("HP Master: tekan Host. HP Client: masukkan alamat IP Master lalu tekan Connect. Port 47821.", color = Muted, fontSize = 12.sp)
+                                    OutlinedTextField(value = peerIp, onValueChange = { peerIp = it }, modifier = Modifier.fillMaxWidth(), label = { Text("IP perangkat Master") }, placeholder = { Text("Contoh: 192.168.1.10") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(onClick = { transport.close(); scope.launch { transport.host({ status = it }, { messages = messages + "Peer: $it" }) } }, modifier = Modifier.weight(1f)) { Text("Host") }
+                                        OutlinedButton(onClick = { if (peerIp.isNotBlank()) { transport.close(); scope.launch { transport.connect(peerIp, { status = it }, { messages = messages + "Peer: $it" }) } } }, modifier = Modifier.weight(1f), enabled = peerIp.isNotBlank()) { Text("Connect") }
+                                    }
+                                    Text(status, color = Cyan, fontSize = 12.sp)
+                                    OutlinedTextField(value = chatInput, onValueChange = { chatInput = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Pesan antarperangkat") }, singleLine = true)
+                                    Button(onClick = { val outgoing = chatInput.trim(); if (outgoing.isNotEmpty()) scope.launch { if (transport.send(outgoing)) messages = messages + "Saya: $outgoing" else messages = messages + "Sistem: belum ada koneksi aktif"; chatInput = "" } }, modifier = Modifier.fillMaxWidth()) { Text("Kirim pesan") }
+                                    messages.takeLast(5).forEach { Text(it, color = Muted, fontSize = 12.sp) }
+                                    OutlinedButton(onClick = { transport.close(); status = "Koneksi ditutup" }, modifier = Modifier.fillMaxWidth()) { Text("Putuskan koneksi") }
                                 }
                             }
                         }
