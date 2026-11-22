@@ -1,6 +1,7 @@
 package com.infinity.dual
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -15,14 +16,16 @@ import java.security.MessageDigest
 /**
  * One-peer local-network transport.
  *
- * A short-lived token from the host QR is verified before the connection is
- * considered paired. This is a pairing check, not transport encryption.
+ * The host keeps listening after a peer disconnects. The client retries a
+ * lost/unavailable connection with bounded exponential backoff. The QR token
+ * authenticates pairing but does not encrypt the TCP connection.
  */
 class LanTransport {
     companion object {
         const val PORT = 47821
         private const val HANDSHAKE_TIMEOUT_MS = 8_000
         private const val MAX_MESSAGE_LENGTH = 2_000
+        private const val MAX_RETRY_DELAY_MS = 8_000L
     }
 
     @Volatile private var socket: Socket? = null
@@ -31,6 +34,8 @@ class LanTransport {
     @Volatile private var explicitlyClosed = false
     private val writeLock = Any()
 
+    private class PairingRejectedException(message: String) : IOException(message)
+
     suspend fun host(
         expectedSession: String,
         expectedToken: String,
@@ -38,7 +43,6 @@ class LanTransport {
         onMessage: (String) -> Unit
     ) = withContext(Dispatchers.IO) {
         var listener: ServerSocket? = null
-        var peer: Socket? = null
         explicitlyClosed = false
         try {
             val serverSocket = ServerSocket()
@@ -46,39 +50,78 @@ class LanTransport {
             serverSocket.reuseAddress = true
             serverSocket.bind(InetSocketAddress(PORT))
             server = serverSocket
+
             withContext(Dispatchers.Main) {
-                onStatus("Menunggu client • port $PORT")
+                onStatus("Menunggu Client • port $PORT")
             }
 
-            val acceptedPeer = serverSocket.accept()
-            peer = acceptedPeer
-            acceptedPeer.tcpNoDelay = true
-            acceptedPeer.soTimeout = HANDSHAKE_TIMEOUT_MS
-            val reader = BufferedReader(InputStreamReader(acceptedPeer.getInputStream(), Charsets.UTF_8))
-            val hello = reader.readLine()
-            if (!isValidHandshake(hello, expectedSession, expectedToken)) {
-                runCatching {
-                    val reject = BufferedWriter(OutputStreamWriter(acceptedPeer.getOutputStream(), Charsets.UTF_8))
-                    reject.write("REJECT")
-                    reject.newLine()
-                    reject.flush()
+            // Keep the same QR session alive so a dropped Client can reconnect.
+            while (!explicitlyClosed && !serverSocket.isClosed) {
+                var peer: Socket? = null
+                try {
+                    val acceptedPeer = serverSocket.accept()
+                    peer = acceptedPeer
+                    acceptedPeer.tcpNoDelay = true
+                    acceptedPeer.soTimeout = HANDSHAKE_TIMEOUT_MS
+
+                    val reader = BufferedReader(
+                        InputStreamReader(acceptedPeer.getInputStream(), Charsets.UTF_8)
+                    )
+                    val hello = reader.readLine()
+                    if (!isValidHandshake(hello, expectedSession, expectedToken)) {
+                        runCatching {
+                            val reject = BufferedWriter(
+                                OutputStreamWriter(acceptedPeer.getOutputStream(), Charsets.UTF_8)
+                            )
+                            reject.write("REJECT")
+                            reject.newLine()
+                            reject.flush()
+                        }
+                        withContext(Dispatchers.Main) {
+                            onStatus("Pairing ditolak • QR tidak cocok atau sudah diganti")
+                        }
+                        continue
+                    }
+
+                    val output = BufferedWriter(
+                        OutputStreamWriter(acceptedPeer.getOutputStream(), Charsets.UTF_8)
+                    )
+                    output.write("WELCOME|$expectedSession")
+                    output.newLine()
+                    output.flush()
+
+                    acceptedPeer.soTimeout = 0
+                    socket = acceptedPeer
+                    writer = output
+                    val peerAddress = acceptedPeer.inetAddress.hostAddress ?: "perangkat lokal"
+                    withContext(Dispatchers.Main) {
+                        onStatus("Terhubung: $peerAddress")
+                    }
+
+                    listen(acceptedPeer, reader, onMessage, onStatus)
+                } catch (error: Exception) {
+                    if (!explicitlyClosed && !serverSocket.isClosed) {
+                        withContext(Dispatchers.Main) {
+                            onStatus("Client gagal: ${error.message ?: "kesalahan jaringan"}")
+                        }
+                    }
+                } finally {
+                    val endedPeer = peer
+                    if (endedPeer != null) {
+                        if (socket === endedPeer) {
+                            socket = null
+                            writer = null
+                        }
+                        runCatching { endedPeer.close() }
+                    }
                 }
-                throw IOException("Pairing ditolak. QR tidak cocok atau sudah diganti.")
-            }
 
-            val output = BufferedWriter(OutputStreamWriter(acceptedPeer.getOutputStream(), Charsets.UTF_8))
-            output.write("WELCOME|$expectedSession")
-            output.newLine()
-            output.flush()
-
-            acceptedPeer.soTimeout = 0
-            socket = acceptedPeer
-            writer = output
-            val peerAddress = acceptedPeer.inetAddress.hostAddress ?: "perangkat lokal"
-            withContext(Dispatchers.Main) {
-                onStatus("Terhubung: $peerAddress")
+                if (!explicitlyClosed && !serverSocket.isClosed) {
+                    withContext(Dispatchers.Main) {
+                        onStatus("Client terputus • menunggu koneksi ulang")
+                    }
+                }
             }
-            listen(acceptedPeer, reader, onMessage, onStatus)
         } catch (error: Exception) {
             if (!explicitlyClosed) {
                 withContext(Dispatchers.Main) {
@@ -86,10 +129,9 @@ class LanTransport {
                 }
             }
         } finally {
-            runCatching { peer?.close() }
             runCatching { listener?.close() }
-            if (socket === peer) socket = null
             if (server === listener) server = null
+            socket = null
             writer = null
         }
     }
@@ -101,44 +143,94 @@ class LanTransport {
         onStatus: (String) -> Unit,
         onMessage: (String) -> Unit
     ) = withContext(Dispatchers.IO) {
-        var peer: Socket? = null
         explicitlyClosed = false
-        try {
-            val connectedPeer = Socket()
-            peer = connectedPeer
-            connectedPeer.tcpNoDelay = true
-            connectedPeer.connect(InetSocketAddress(host.trim(), PORT), HANDSHAKE_TIMEOUT_MS)
-            connectedPeer.soTimeout = HANDSHAKE_TIMEOUT_MS
+        var attempt = 0
 
-            val reader = BufferedReader(InputStreamReader(connectedPeer.getInputStream(), Charsets.UTF_8))
-            val output = BufferedWriter(OutputStreamWriter(connectedPeer.getOutputStream(), Charsets.UTF_8))
-            output.write("HELLO|$expectedSession|$expectedToken")
-            output.newLine()
-            output.flush()
+        // Reuse the scanned pairing credentials until the user explicitly disconnects.
+        while (!explicitlyClosed) {
+            var peer: Socket? = null
+            var retry = false
+            try {
+                val connectedPeer = Socket()
+                peer = connectedPeer
+                connectedPeer.tcpNoDelay = true
+                connectedPeer.connect(
+                    InetSocketAddress(host.trim(), PORT),
+                    HANDSHAKE_TIMEOUT_MS
+                )
+                connectedPeer.soTimeout = HANDSHAKE_TIMEOUT_MS
 
-            val response = reader.readLine()
-            if (response != "WELCOME|$expectedSession") {
-                throw IOException("Pairing ditolak oleh perangkat Master.")
-            }
+                val reader = BufferedReader(
+                    InputStreamReader(connectedPeer.getInputStream(), Charsets.UTF_8)
+                )
+                val output = BufferedWriter(
+                    OutputStreamWriter(connectedPeer.getOutputStream(), Charsets.UTF_8)
+                )
+                output.write("HELLO|$expectedSession|$expectedToken")
+                output.newLine()
+                output.flush()
 
-            connectedPeer.soTimeout = 0
-            socket = connectedPeer
-            writer = output
-            withContext(Dispatchers.Main) {
-                onStatus("Terhubung ke $host")
-            }
-            listen(connectedPeer, reader, onMessage, onStatus)
-        } catch (error: Exception) {
-            if (!explicitlyClosed) {
+                val response = reader.readLine()
+                if (response == "REJECT" || response != "WELCOME|$expectedSession") {
+                    throw PairingRejectedException("Pairing ditolak. Pindai QR Master yang masih aktif.")
+                }
+
+                connectedPeer.soTimeout = 0
+                socket = connectedPeer
+                writer = output
+                attempt = 0
                 withContext(Dispatchers.Main) {
-                    onStatus("Gagal terhubung: ${error.message ?: "periksa Wi-Fi dan QR"}")
+                    onStatus("Terhubung ke $host")
+                }
+
+                listen(connectedPeer, reader, onMessage, onStatus)
+                retry = !explicitlyClosed
+            } catch (error: PairingRejectedException) {
+                if (!explicitlyClosed) {
+                    withContext(Dispatchers.Main) { onStatus(error.message ?: "Pairing ditolak") }
+                }
+                break
+            } catch (error: Exception) {
+                retry = !explicitlyClosed
+                if (retry) {
+                    attempt += 1
+                    val waitMs = retryDelay(attempt)
+                    withContext(Dispatchers.Main) {
+                        onStatus(
+                            "Koneksi gagal • mencoba ulang ke $host dalam ${waitMs / 1000} dtk " +
+                                "(percobaan $attempt)"
+                        )
+                    }
+                    delay(waitMs)
+                }
+            } finally {
+                val endedPeer = peer
+                if (endedPeer != null) {
+                    if (socket === endedPeer) {
+                        socket = null
+                        writer = null
+                    }
+                    runCatching { endedPeer.close() }
                 }
             }
-        } finally {
-            runCatching { peer?.close() }
-            if (socket === peer) socket = null
-            writer = null
+
+            if (retry && !explicitlyClosed) {
+                attempt += 1
+                val waitMs = retryDelay(attempt)
+                withContext(Dispatchers.Main) {
+                    onStatus(
+                        "Koneksi terputus • menyambung ulang ke $host dalam " +
+                            "${waitMs / 1000} dtk (percobaan $attempt)"
+                    )
+                }
+                delay(waitMs)
+            }
         }
+    }
+
+    private fun retryDelay(attempt: Int): Long {
+        val exponent = (attempt - 1).coerceIn(0, 3)
+        return (1_000L * (1L shl exponent)).coerceAtMost(MAX_RETRY_DELAY_MS)
     }
 
     private fun isValidHandshake(line: String?, session: String, token: String): Boolean {
@@ -157,7 +249,7 @@ class LanTransport {
         onStatus: (String) -> Unit
     ) {
         try {
-            while (!peer.isClosed) {
+            while (!peer.isClosed && !explicitlyClosed) {
                 val line = reader.readLine() ?: break
                 if (line.length > MAX_MESSAGE_LENGTH) {
                     withContext(Dispatchers.Main) {
