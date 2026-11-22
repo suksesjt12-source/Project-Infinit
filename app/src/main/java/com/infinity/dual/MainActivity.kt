@@ -1,9 +1,14 @@
 package com.infinity.dual
 
+import android.app.Activity
+import android.content.Context
 import android.graphics.Bitmap
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -13,24 +18,69 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
+import com.journeyapps.barcodescanner.IntentIntegrator
+import kotlinx.coroutines.launch
+import java.security.SecureRandom
 import java.util.UUID
 
 private val Navy = Color(0xFF07111F)
 private val Panel = Color(0xFF111F32)
 private val Cyan = Color(0xFF43D9F5)
 private val Muted = Color(0xFF9BB0C8)
+
+private data class PairingDetails(
+    val host: String,
+    val port: Int,
+    val session: String,
+    val token: String
+)
+
+private fun parsePairingPayload(raw: String): PairingDetails? {
+    val parts = raw.trim().split('|')
+    if (parts.size != 6 || parts[0] != "INFINITY" || parts[1] != "1") return null
+
+    val octets = parts[2].split('.')
+    if (octets.size != 4 || octets.any {
+            val value = it.toIntOrNull()
+            value == null || value !in 0..255
+        }) return null
+
+    val port = parts[3].toIntOrNull() ?: return null
+    if (port !in 1024..65535) return null
+    if (!parts[4].matches(Regex("[A-Fa-f0-9]{8,16}"))) return null
+    if (!parts[5].matches(Regex("[A-Fa-f0-9]{48}"))) return null
+
+    return PairingDetails(parts[2], port, parts[4], parts[5])
+}
+
+@Suppress("DEPRECATION")
+private fun localWifiIpv4(context: Context): String? {
+    val manager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        ?: return null
+    val address = manager.connectionInfo?.ipAddress ?: 0
+    if (address == 0) return null
+    return (0..3).joinToString(".") { shift ->
+        ((address shr (shift * 8)) and 0xff).toString()
+    }
+}
+
+private fun createPairToken(): String {
+    val bytes = ByteArray(24)
+    SecureRandom().nextBytes(bytes)
+    return bytes.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,14 +94,40 @@ fun InfinityApp() {
     var selected by remember { mutableStateOf(0) }
     var role by remember { mutableStateOf("Master") }
     var session by remember { mutableStateOf(UUID.randomUUID().toString().take(8).uppercase()) }
+    var pairingPayload by remember { mutableStateOf<String?>(null) }
+    var peerIp by remember { mutableStateOf("") }
+    var peerSession by remember { mutableStateOf("") }
+    var peerToken by remember { mutableStateOf("") }
     var showPair by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Belum terhubung") }
-    var peerIp by remember { mutableStateOf("") }
     var chatInput by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf(listOf<String>()) }
+
+    val context = LocalContext.current
+    val activity = context as? Activity
     val transport = remember { LanTransport() }
     val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
+
+    val scanLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val scan = IntentIntegrator.parseActivityResult(result.resultCode, result.data)
+        val raw = scan?.contents
+        val details = raw?.let(::parsePairingPayload)
+        if (details == null) {
+            status = if (raw == null) "Pemindaian dibatalkan" else "QR tidak dikenali. Gunakan QR dari PROJECT INFINITY."
+        } else {
+            peerIp = details.host
+            peerSession = details.session
+            peerToken = details.token
+            status = "QR valid • Master ${details.host} • sesi ${details.session}"
+        }
+    }
+
+    DisposableEffect(transport) {
+        onDispose { transport.close() }
+    }
 
     MaterialTheme(colorScheme = darkColorScheme(
         primary = Cyan, background = Navy, surface = Panel,
@@ -66,7 +142,11 @@ fun InfinityApp() {
                         onClick = { selected = index },
                         icon = { Icon(icons[index], contentDescription = label) },
                         label = { Text(label) },
-                        colors = NavigationBarItemDefaults.colors(selectedIconColor = Cyan, indicatorColor = Cyan.copy(alpha = .15f), selectedTextColor = Cyan)
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Cyan,
+                            indicatorColor = Cyan.copy(alpha = .15f),
+                            selectedTextColor = Cyan
+                        )
                     )
                 }
             }
@@ -83,7 +163,7 @@ fun InfinityApp() {
                             Text("INFINITY", fontSize = 29.sp, fontWeight = FontWeight.Black, color = Color.White)
                         }
                         Surface(color = Cyan.copy(alpha = .12f), shape = RoundedCornerShape(20.dp)) {
-                            Text("v1.0.0 • MAX", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("v1.1.0 • PAIRING", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -94,54 +174,183 @@ fun InfinityApp() {
                         item {
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 MetricCard("ROLE", role, Icons.Default.Devices, Modifier.weight(1f))
-                                MetricCard("LINK", if (status == "Terhubung") "Online" else "Offline", Icons.Default.Wifi, Modifier.weight(1f))
+                                MetricCard("LINK", if (status.startsWith("Terhubung")) "Online" else "Offline", Icons.Default.Wifi, Modifier.weight(1f))
                             }
                         }
-                        item { FeatureCard("Ekosistem dua perangkat", "Pairing, berbagi file, remote input, dan monitoring dalam satu tempat.", Icons.Default.Hub) }
-                        item { FeatureCard("Koneksi lokal", "Dirancang untuk jaringan Wi-Fi/hotspot lokal. Internet tidak diperlukan untuk komunikasi lokal setelah kedua perangkat berada di jaringan yang sama.", Icons.Default.Wifi) }
+                        item { FeatureCard("Ekosistem dua perangkat", "Pairing QR tervalidasi, pesan LAN, dan fondasi untuk berbagi file serta kontrol perangkat.", Icons.Default.Hub) }
+                        item { FeatureCard("Koneksi lokal", "Kedua HP harus berada pada Wi-Fi atau hotspot yang sama. Komunikasi lokal tidak membutuhkan internet.", Icons.Default.Wifi) }
                     }
                     1 -> {
                         item { Text("DEVICE PAIRING", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp) }
                         item {
                             Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-                                Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Column(
+                                    Modifier.fillMaxWidth().padding(18.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
                                     Text("Pilih peran perangkat", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        FilterChip(selected = role == "Master", onClick = { role = "Master" }, label = { Text("Master") })
-                                        FilterChip(selected = role == "Client", onClick = { role = "Client" }, label = { Text("Client") })
+                                        FilterChip(
+                                            selected = role == "Master",
+                                            onClick = { role = "Master" },
+                                            label = { Text("Master") }
+                                        )
+                                        FilterChip(
+                                            selected = role == "Client",
+                                            onClick = {
+                                                role = "Client"
+                                                pairingPayload = null
+                                            },
+                                            label = { Text("Client") }
+                                        )
                                     }
+
                                     Text("Kode sesi", color = Muted)
                                     Text(session, color = Cyan, fontSize = 28.sp, fontWeight = FontWeight.Black, letterSpacing = 4.sp)
-                                    QrImage("INFINITY:$session:$role")
-                                    Text("QR sesi masih berupa identitas visual. Koneksi LAN dasar tersedia di bawah; kedua HP harus berada pada Wi-Fi/hotspot yang sama.", color = Muted, fontSize = 12.sp)
-                                    OutlinedButton(onClick = { session = UUID.randomUUID().toString().take(8).uppercase(); status = "Sesi baru dibuat" }, modifier = Modifier.fillMaxWidth()) {
-                                        Icon(Icons.Default.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Buat sesi baru")
+
+                                    if (role == "Master") {
+                                        if (pairingPayload == null) {
+                                            Text("Tekan Host untuk membuat QR pairing yang berisi alamat LAN dan token sesi sementara.", color = Muted, fontSize = 12.sp)
+                                        } else {
+                                            QrImage(pairingPayload!!)
+                                            Text("Tampilkan QR ini kepada HP Client. Token hanya berlaku untuk sesi Host saat ini.", color = Muted, fontSize = 12.sp)
+                                        }
+                                    } else {
+                                        Text("Pindai QR dari perangkat Master untuk mengisi alamat host dan kredensial sesi.", color = Muted, fontSize = 12.sp)
+                                        OutlinedButton(
+                                            onClick = {
+                                                val hostActivity = activity
+                                                if (hostActivity == null) {
+                                                    status = "Pemindai tidak tersedia pada konteks ini"
+                                                } else {
+                                                    val intent = IntentIntegrator(hostActivity)
+                                                        .setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                                                        .setPrompt("Arahkan kamera ke QR PROJECT INFINITY pada HP Master")
+                                                        .setBeepEnabled(false)
+                                                        .setOrientationLocked(false)
+                                                        .createScanIntent()
+                                                    scanLauncher.launch(intent)
+                                                }
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Default.QrCodeScanner, null)
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Pindai QR Master")
+                                        }
                                     }
-                                    Button(onClick = { showPair = true }, modifier = Modifier.fillMaxWidth()) { Text("Petunjuk menghubungkan") }
-                                    Divider(color = Muted.copy(alpha = .25f))
-                                    Text("KONEKSI WI-FI LOKAL", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    Text("HP Master: tekan Host. HP Client: masukkan alamat IP Master lalu tekan Connect. Port 47821.", color = Muted, fontSize = 12.sp)
-                                    OutlinedTextField(value = peerIp, onValueChange = { peerIp = it }, modifier = Modifier.fillMaxWidth(), label = { Text("IP perangkat Master") }, placeholder = { Text("Contoh: 192.168.1.10") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+
+                                    if (role == "Client") {
+                                        OutlinedTextField(
+                                            value = peerIp,
+                                            onValueChange = { peerIp = it },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            label = { Text("IP perangkat Master") },
+                                            placeholder = { Text("Terisi setelah QR dipindai") },
+                                            singleLine = true,
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                                        )
+                                        Text(
+                                            if (peerSession.isNotBlank()) "Sesi terbaca: $peerSession" else "Belum ada data pairing",
+                                            color = Muted,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+
                                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Button(onClick = { transport.close(); scope.launch { transport.host({ status = it }, { messages = messages + "Peer: $it" }) } }, modifier = Modifier.weight(1f)) { Text("Host") }
-                                        OutlinedButton(onClick = { if (peerIp.isNotBlank()) { transport.close(); scope.launch { transport.connect(peerIp, { status = it }, { messages = messages + "Peer: $it" }) } } }, modifier = Modifier.weight(1f), enabled = peerIp.isNotBlank()) { Text("Connect") }
+                                        if (role == "Master") {
+                                            Button(
+                                                onClick = {
+                                                    val hostIp = localWifiIpv4(context)
+                                                    if (hostIp == null) {
+                                                        status = "Alamat Wi-Fi belum tersedia. Hubungkan HP ke Wi-Fi/hotspot terlebih dahulu."
+                                                    } else {
+                                                        transport.close()
+                                                        session = UUID.randomUUID().toString().take(8).uppercase()
+                                                        val token = createPairToken()
+                                                        pairingPayload = "INFINITY|1|$hostIp|${LanTransport.PORT}|$session|$token"
+                                                        status = "Menyiapkan Host di $hostIp:${LanTransport.PORT}"
+                                                        scope.launch {
+                                                            transport.host(session, token, { status = it }, { messages = messages + "Peer: $it" })
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f)
+                                            ) { Text("Host / Buat QR") }
+                                        } else {
+                                            Button(
+                                                onClick = {
+                                                    if (peerIp.isNotBlank() && peerSession.isNotBlank() && peerToken.isNotBlank()) {
+                                                        transport.close()
+                                                        scope.launch {
+                                                            transport.connect(
+                                                                peerIp, peerSession, peerToken,
+                                                                { status = it },
+                                                                { messages = messages + "Peer: $it" }
+                                                            )
+                                                        }
+                                                    } else {
+                                                        status = "Pindai QR Master terlebih dahulu"
+                                                    }
+                                                },
+                                                modifier = Modifier.weight(1f),
+                                                enabled = peerIp.isNotBlank() && peerSession.isNotBlank() && peerToken.isNotBlank()
+                                            ) { Text("Connect") }
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                transport.close()
+                                                pairingPayload = null
+                                                peerSession = ""
+                                                peerToken = ""
+                                                status = "Koneksi ditutup"
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) { Text("Putuskan") }
                                     }
+
                                     Text(status, color = Cyan, fontSize = 12.sp)
-                                    OutlinedTextField(value = chatInput, onValueChange = { chatInput = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Pesan antarperangkat") }, singleLine = true)
-                                    Button(onClick = { val outgoing = chatInput.trim(); if (outgoing.isNotEmpty()) scope.launch { if (transport.send(outgoing)) messages = messages + "Saya: $outgoing" else messages = messages + "Sistem: belum ada koneksi aktif"; chatInput = "" } }, modifier = Modifier.fillMaxWidth()) { Text("Kirim pesan") }
-                                    messages.takeLast(5).forEach { Text(it, color = Muted, fontSize = 12.sp) }
-                                    OutlinedButton(onClick = { transport.close(); status = "Koneksi ditutup" }, modifier = Modifier.fillMaxWidth()) { Text("Putuskan koneksi") }
+                                    Divider(color = Muted.copy(alpha = .25f))
+                                    Text("PESAN ANTARPERANGKAT", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    OutlinedTextField(
+                                        value = chatInput,
+                                        onValueChange = { chatInput = it.take(2000) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        label = { Text("Tulis pesan") },
+                                        singleLine = true
+                                    )
+                                    Button(
+                                        onClick = {
+                                            val outgoing = chatInput.trim()
+                                            if (outgoing.isNotEmpty()) {
+                                                scope.launch {
+                                                    if (transport.send(outgoing)) messages = messages + "Saya: $outgoing"
+                                                    else messages = messages + "Sistem: belum ada koneksi aktif"
+                                                    chatInput = ""
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) { Text("Kirim pesan") }
+                                    messages.takeLast(6).forEach { Text(it, color = Muted, fontSize = 12.sp) }
+
+                                    Text(
+                                        "Catatan keamanan: pairing memverifikasi token QR, tetapi pesan LAN pada versi ini belum dienkripsi. Gunakan hanya pada jaringan pribadi tepercaya dan jangan kirim informasi sensitif.",
+                                        color = Muted,
+                                        fontSize = 11.sp,
+                                        lineHeight = 16.sp
+                                    )
                                 }
                             }
                         }
                     }
                     else -> {
                         item { Text("INFINITY TOOLS", color = Muted, fontSize = 12.sp, letterSpacing = 2.sp) }
-                        item { FeatureCard("File Transfer", "Direncanakan: kirim file dengan progress, resume, dan verifikasi checksum.", Icons.Default.Folder) }
-                        item { FeatureCard("Remote Input", "Direncanakan: touchpad, keyboard, dan gamepad virtual dengan izin eksplisit.", Icons.Default.Gamepad) }
-                        item { FeatureCard("System Monitor", "Menampilkan informasi perangkat yang diizinkan Android, seperti RAM, baterai, dan jaringan.", Icons.Default.MonitorHeart) }
-                        item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan izin tangkap layar Android pada perangkat sumber.", Icons.Default.Cast) }
-                        item { FeatureCard("Camera Link", "Akses kamera hanya setelah izin kamera diberikan di perangkat yang menjadi kamera.", Icons.Default.PhotoCamera) }
+                        item { FeatureCard("File Transfer", "Berikutnya: kirim file dengan pemilih file, progress, dan pemeriksaan checksum.", Icons.Default.Folder) }
+                        item { FeatureCard("Remote Input", "Touchpad, keyboard, dan gamepad dalam aplikasi dengan izin eksplisit.", Icons.Default.Gamepad) }
+                        item { FeatureCard("System Monitor", "Informasi perangkat yang disediakan Android, seperti RAM, baterai, dan jaringan.", Icons.Default.MonitorHeart) }
+                        item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan persetujuan tangkap layar Android.", Icons.Default.Cast) }
+                        item { FeatureCard("Camera Link", "Akses kamera hanya setelah izin kamera diberikan.", Icons.Default.PhotoCamera) }
                     }
                 }
             }
@@ -149,7 +358,7 @@ fun InfinityApp() {
         if (showPair) AlertDialog(
             onDismissRequest = { showPair = false },
             title = { Text("Cara menghubungkan") },
-            text = { Text("1. Pasang aplikasi ini pada kedua HP.\n2. Hubungkan keduanya ke Wi-Fi atau hotspot yang sama.\n3. Pilih Master pada satu HP dan Client pada HP lainnya.\n4. Cocokkan kode sesi.\n\nPairing QR pada versi ini masih berupa prototipe visual; transport jaringan dan pemindaian QR akan ditambahkan pada iterasi berikutnya.") },
+            text = { Text("1. Pasang aplikasi pada kedua HP.\n2. Hubungkan keduanya ke Wi-Fi atau hotspot yang sama.\n3. Pada HP pertama pilih Master lalu tekan Host / Buat QR.\n4. Pada HP kedua pilih Client, pindai QR Master, lalu tekan Connect.\n5. Setelah status Terhubung muncul, uji fitur pesan.\n\nPairing memerlukan jaringan lokal yang mengizinkan koneksi antarperangkat.") },
             confirmButton = { TextButton(onClick = { showPair = false }) { Text("Mengerti") } }
         )
     }
@@ -167,7 +376,7 @@ private fun HeroCard(status: String) {
             Text("Two phones.\nOne connected workspace.", fontSize = 25.sp, lineHeight = 31.sp, fontWeight = FontWeight.Bold)
             Text("Hubungkan perangkat dan kelola tools dari satu dashboard.", color = Muted, fontSize = 13.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(if (status == "Terhubung") Color.Green else Color(0xFFFFB74D), RoundedCornerShape(50)))
+                Box(Modifier.size(8.dp).background(if (status.startsWith("Terhubung")) Color.Green else Color(0xFFFFB74D), RoundedCornerShape(50)))
                 Spacer(Modifier.width(8.dp))
                 Text(status, color = Muted, fontSize = 12.sp)
             }
@@ -176,7 +385,12 @@ private fun HeroCard(status: String) {
 }
 
 @Composable
-private fun MetricCard(title: String, value: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
+private fun MetricCard(
+    title: String,
+    value: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier
+) {
     Card(modifier, colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.padding(15.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(icon, tint = Cyan, contentDescription = null)
@@ -187,7 +401,11 @@ private fun MetricCard(title: String, value: String, icon: androidx.compose.ui.g
 }
 
 @Composable
-private fun FeatureCard(title: String, description: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+private fun FeatureCard(
+    title: String,
+    description: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector
+) {
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(16.dp)) {
         Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.Top) {
             Icon(icon, tint = Cyan, contentDescription = null, modifier = Modifier.size(24.dp))
@@ -204,17 +422,31 @@ private fun FeatureCard(title: String, description: String, icon: androidx.compo
 private fun QrImage(value: String) {
     val bitmap = remember(value) { createQr(value) }
     if (bitmap != null) {
-        Surface(color = Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.alignCenter()) {
-            Image(bitmap.asImageBitmap(), contentDescription = "QR code sesi", modifier = Modifier.padding(12.dp).size(190.dp))
+        Surface(
+            color = Color.White,
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().wrapContentWidth(Alignment.CenterHorizontally)
+        ) {
+            Image(
+                bitmap.asImageBitmap(),
+                contentDescription = "QR code pairing PROJECT INFINITY",
+                modifier = Modifier.padding(12.dp).size(220.dp)
+            )
         }
     }
 }
 
-private fun Modifier.alignCenter(): Modifier = this.wrapContentWidth(Alignment.CenterHorizontally)
-
 private fun createQr(value: String): Bitmap? = try {
-    val matrix = QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, 420, 420)
-    Bitmap.createBitmap(420, 420, Bitmap.Config.ARGB_8888).also { bmp ->
-        for (x in 0 until 420) for (y in 0 until 420) bmp.setPixel(x, y, if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE)
+    val matrix = QRCodeWriter().encode(value, BarcodeFormat.QR_CODE, 480, 480)
+    Bitmap.createBitmap(480, 480, Bitmap.Config.ARGB_8888).also { bitmap ->
+        for (x in 0 until 480) for (y in 0 until 480) {
+            bitmap.setPixel(
+                x,
+                y,
+                if (matrix[x, y]) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+            )
+        }
     }
-} catch (_: Exception) { null }
+} catch (_: Exception) {
+    null
+}
