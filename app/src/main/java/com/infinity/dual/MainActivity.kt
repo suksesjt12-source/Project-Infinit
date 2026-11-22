@@ -138,6 +138,7 @@ fun InfinityApp() {
     var status by remember { mutableStateOf("Belum terhubung") }
     var chatInput by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf(listOf<String>()) }
+    var remotePadStatus by remember { mutableStateOf("Belum ada event gamepad diterima") }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -151,6 +152,23 @@ fun InfinityApp() {
     val transport = remember { LanTransport() }
     val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
+
+    val handlePeerMessage: (String) -> Unit = { incoming ->
+        if (incoming.startsWith("PAD|")) {
+            remotePadStatus = "Event dari perangkat pasangan: ${incoming.removePrefix("PAD|")}"
+        } else {
+            messages = messages + "Peer: $incoming"
+        }
+    }
+    val sendPadCommand: (String) -> Unit = { command ->
+        scope.launch {
+            if (transport.send("PAD|$command")) {
+                remotePadStatus = "Event dikirim: $command"
+            } else {
+                remotePadStatus = "Belum terhubung. Hubungkan perangkat dahulu."
+            }
+        }
+    }
 
     val scanLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -314,7 +332,7 @@ fun InfinityApp() {
                                                         pairingPayload = "INFINITY|1|$hostIp|${LanTransport.PORT}|$session|$token"
                                                         status = "Menyiapkan Host di $hostIp:${LanTransport.PORT}"
                                                         scope.launch {
-                                                            transport.host(session, token, { status = it }, { messages = messages + "Peer: $it" })
+                                                            transport.host(session, token, { status = it }, { handlePeerMessage(it) })
                                                         }
                                                     }
                                                 },
@@ -329,7 +347,7 @@ fun InfinityApp() {
                                                             transport.connect(
                                                                 peerIp, peerSession, peerToken,
                                                                 { status = it },
-                                                                { messages = messages + "Peer: $it" }
+                                                                { handlePeerMessage(it) }
                                                             )
                                                         }
                                                     } else {
@@ -392,6 +410,7 @@ fun InfinityApp() {
                         item { FeatureCard("File Transfer", "Berikutnya: kirim file dengan pemilih file, progress, dan pemeriksaan checksum.", Icons.Default.Folder) }
                         item { FeatureCard("Remote Input", "Touchpad, keyboard, dan gamepad dalam aplikasi dengan izin eksplisit.", Icons.Default.Gamepad) }
                         item { SystemMonitorCard(deviceStats) }
+                        item { GamepadRelayCard(remotePadStatus, sendPadCommand) }
                         item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan persetujuan tangkap layar Android.", Icons.Default.Cast) }
                         item { FeatureCard("Camera Link", "Akses kamera hanya setelah izin kamera diberikan.", Icons.Default.PhotoCamera) }
                     }
@@ -407,6 +426,67 @@ fun InfinityApp() {
     }
 }
 
+
+
+@Composable
+private fun GamepadRelayCard(status: String, onCommand: (String) -> Unit) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Gamepad, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(10.dp))
+                Text("DUAL DEVICE GAMEPAD", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("D-Pad", color = Muted, fontSize = 12.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                GamepadButton("▲", "UP", onCommand)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                GamepadButton("◀", "LEFT", onCommand)
+                Spacer(Modifier.width(8.dp))
+                GamepadButton("OK", "CENTER", onCommand)
+                Spacer(Modifier.width(8.dp))
+                GamepadButton("▶", "RIGHT", onCommand)
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                GamepadButton("▼", "DOWN", onCommand)
+            }
+            Divider(color = Muted.copy(alpha = .25f))
+            Text("Action buttons", color = Muted, fontSize = 12.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("A", "B", "X", "Y").forEach { key ->
+                    OutlinedButton(
+                        onClick = { onCommand(key) },
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 10.dp)
+                    ) {
+                        Text(key, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+            Text(status, color = Cyan, fontSize = 12.sp)
+            Text(
+                "Tombol mengirim event ke aplikasi PROJECT INFINITY di perangkat pasangan. Ini belum menjadi gamepad HID dan tidak mengendalikan game eksternal secara otomatis.",
+                color = Muted,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun GamepadButton(label: String, command: String, onCommand: (String) -> Unit) {
+    OutlinedButton(
+        onClick = { onCommand(command) },
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+    ) {
+        Text(label, fontWeight = FontWeight.Bold)
+    }
+}
 
 @Composable
 private fun SystemMonitorCard(stats: DeviceStats) {
