@@ -12,7 +12,8 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 - One-way microphone audio from Client to Master. Runtime microphone permission and a persistent foreground-service notification are required.
 - Screen, camera and audio streams use HMAC challenge-response and AES-256-GCM protected frames.
 - Automatic LAN reconnect for the main messaging connection.
-- Device status dashboard, in-app touchpad/gamepad event relay and text relay.
+- Local system monitor and automatic paired-device status sync (model, Android version, battery, available/total RAM and free storage).
+- In-app touchpad/gamepad event relay and text relay.
 
 ## Pairing
 
@@ -21,6 +22,10 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 3. On the first phone, choose **Master** and select **Host / Buat QR**.
 4. On the second phone, choose **Client**, scan the Master QR and press **Connect**.
 5. Open **Tools** on either device to access the sharing panels.
+
+## Paired-device status sync
+
+When the two phones are connected, each device sends a small system-status snapshot to the other every five seconds. The Tools tab shows the paired phone's model, Android version, battery percentage, available and total RAM, and free storage. Status is read-only and is cleared from the dashboard when the connection is lost.
 
 ## Camera streaming
 
@@ -48,7 +53,7 @@ Audio uses mono PCM at 16 kHz in short frames to limit bandwidth. This feature s
 - Camera and microphone sharing require explicit user action and Android runtime permission.
 - Android restricts starting camera and microphone foreground services from the background. Start sharing from the visible app screen.
 - Audio playback and camera performance depend on device hardware, Wi-Fi quality and current system load.
-- Automatic reconnect covers the main LAN messaging connection. Screen, camera and audio streams must be started again after a reconnect.
+- Automatic reconnect covers the main LAN messaging connection. Paired-device status sync resumes automatically after reconnect. Screen, camera and audio streams must be started again after a reconnect.
 - Touchpad, gamepad and keyboard relays send events only inside PROJECT INFINITY; they do not inject input into unrelated Android apps or games.
 - Use a private network you trust. Pairing protects the connection but does not make an untrusted Wi-Fi network safe.
 - Two-device hardware testing is still required for audio quality, microphone compatibility, camera performance, temperature and reconnect behavior.
