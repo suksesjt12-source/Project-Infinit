@@ -98,6 +98,40 @@ private fun readDeviceStats(context: Context): DeviceStats {
     )
 }
 
+private fun encodeDeviceStats(stats: DeviceStats): String {
+    fun encode(value: String): String = Base64.encodeToString(
+        value.toByteArray(Charsets.UTF_8),
+        Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING
+    )
+    return listOf(
+        "DEVICE_STATS", encode(stats.model.take(80)), encode(stats.androidVersion.take(24)),
+        stats.batteryPercent ?: -1, stats.availableRamMb.coerceAtLeast(0),
+        stats.totalRamMb.coerceAtLeast(0), stats.freeStorageMb.coerceAtLeast(0)
+    ).joinToString("|")
+}
+
+private fun decodeDeviceStats(parts: List<String>): DeviceStats? {
+    if (parts.size != 7 || parts[0] != "DEVICE_STATS") return null
+    return runCatching {
+        fun decode(value: String): String = String(
+            Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP), Charsets.UTF_8
+        ).take(100)
+        val battery = parts[3].toInt()
+        val availableRam = parts[4].toLong()
+        val totalRam = parts[5].toLong()
+        val freeStorage = parts[6].toLong()
+        if (battery !in -1..100 || availableRam < 0 || totalRam < 0 ||
+            freeStorage < 0 || availableRam > 1_000_000 || totalRam > 1_000_000 ||
+            freeStorage > 10_000_000) return null
+        DeviceStats(
+            model = decode(parts[1]).ifBlank { "Perangkat Android" },
+            androidVersion = decode(parts[2]).ifBlank { "Tidak diketahui" },
+            batteryPercent = battery.takeIf { it in 0..100 },
+            availableRamMb = availableRam, totalRamMb = totalRam, freeStorageMb = freeStorage
+        )
+    }.getOrNull()
+}
+
 private fun parsePairingPayload(raw: String): PairingDetails? {
     val parts = raw.trim().split('|')
     if (parts.size != 6 || parts[0] != "INFINITY" || parts[1] != "1") return null
@@ -218,6 +252,7 @@ fun InfinityApp() {
     val context = LocalContext.current
     val activity = context as? Activity
     var deviceStats by remember { mutableStateOf(readDeviceStats(context)) }
+    var remoteDeviceStats by remember { mutableStateOf<DeviceStats?>(null) }
     LaunchedEffect(Unit) {
         while (isActive) {
             deviceStats = readDeviceStats(context)
@@ -225,6 +260,16 @@ fun InfinityApp() {
         }
     }
     val transport = remember { LanTransport() }
+    LaunchedEffect(status) {
+        if (!status.startsWith("Terhubung")) {
+            remoteDeviceStats = null
+        } else {
+            while (isActive && status.startsWith("Terhubung")) {
+                transport.send(encodeDeviceStats(readDeviceStats(context)))
+                delay(5_000)
+            }
+        }
+    }
     val screenStreamReceiver = remember { ScreenStreamReceiver() }
     val cameraStreamReceiver = remember { CameraStreamReceiver() }
     val audioStreamReceiver = remember { AudioStreamReceiver() }
@@ -234,6 +279,9 @@ fun InfinityApp() {
     val handlePeerMessage: (String) -> Unit = { incoming ->
         val parts = incoming.split('|')
         when (parts.firstOrNull()) {
+            "DEVICE_STATS" -> {
+                remoteDeviceStats = decodeDeviceStats(parts)
+            }
             "FILE_BEGIN" -> {
                 if (parts.size == 5 && incomingTransfer == null && pendingReceivedFile == null) {
                     val id = parts[1]
@@ -559,7 +607,7 @@ fun InfinityApp() {
                             Text("INFINITY", fontSize = 29.sp, fontWeight = FontWeight.Black, color = Color.White)
                         }
                         Surface(color = Cyan.copy(alpha = .12f), shape = RoundedCornerShape(20.dp)) {
-                            Text("v1.5.0 • AUDIO STREAM", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("v1.6.0 • DEVICE SYNC", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -799,6 +847,7 @@ fun InfinityApp() {
                         item { KeyboardRelayCard { text -> sendPadCommand("KEY|$text") } }
                         item { FeatureCard("Remote Input", "Event touchpad, gamepad, dan teks dikirim ke aplikasi pasangan. Tidak mengendalikan aplikasi eksternal.", Icons.Default.Gamepad) }
                         item { SystemMonitorCard(deviceStats) }
+                        item { RemoteDeviceCard(remoteDeviceStats) }
                         item { GamepadRelayCard(remotePadStatus, sendPadCommand) }
                         item {
                             ScreenStreamCard(
@@ -1183,6 +1232,36 @@ private fun TouchpadRelayCard(status: String, onCommand: (String) -> Unit) {
             }
             Text(status, color = Cyan, fontSize = 12.sp)
             Text("Touchpad ini hanya mengirim event ke aplikasi PROJECT INFINITY di HP pasangan, bukan mengendalikan layar Android atau game eksternal.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
+    }
+}
+
+@Composable
+private fun RemoteDeviceCard(stats: DeviceStats?) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Devices, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text("PAIRED DEVICE", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(stats?.model ?: "Belum ada data perangkat", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            if (stats == null) {
+                Text("Hubungkan kedua HP. Status perangkat pasangan akan muncul otomatis.", color = Muted, fontSize = 12.sp)
+            } else {
+                Text("Android ${stats.androidVersion} • sinkronisasi otomatis saat terhubung", color = Muted, fontSize = 11.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetricCard("BATTERY", stats.batteryPercent?.let { "${it}%" } ?: "N/A", Icons.Default.BatteryChargingFull, Modifier.weight(1f))
+                    MetricCard("RAM FREE", "${stats.availableRamMb} MB", Icons.Default.Memory, Modifier.weight(1f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MetricCard("RAM TOTAL", "${stats.totalRamMb} MB", Icons.Default.DeveloperBoard, Modifier.weight(1f))
+                    MetricCard("STORAGE FREE", "${stats.freeStorageMb} MB", Icons.Default.Storage, Modifier.weight(1f))
+                }
+            }
+            Text("Data hanya dibaca dari Android dan dikirim melalui koneksi terenkripsi PROJECT INFINITY.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
         }
     }
 }
