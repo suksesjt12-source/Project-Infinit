@@ -3,6 +3,8 @@ package com.infinity.dual
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
+import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -32,6 +34,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -201,6 +204,9 @@ fun InfinityApp() {
     var fileTransferStatus by remember { mutableStateOf("Pilih file setelah kedua HP terhubung.") }
     var fileTransferProgress by remember { mutableStateOf(0f) }
     var isSendingFile by remember { mutableStateOf(false) }
+    var remoteScreenFrame by remember { mutableStateOf<Bitmap?>(null) }
+    var screenStreamStatus by remember { mutableStateOf("Layar belum dibagikan.") }
+    var isSharingScreen by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -212,6 +218,7 @@ fun InfinityApp() {
         }
     }
     val transport = remember { LanTransport() }
+    val screenStreamReceiver = remember { ScreenStreamReceiver() }
     val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
 
@@ -305,6 +312,35 @@ fun InfinityApp() {
         }
     }
 
+    val screenConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val resultData = result.data
+        if (result.resultCode == Activity.RESULT_OK && resultData != null) {
+            if (role != "Client" || peerIp.isBlank() || peerToken.isBlank() || !status.startsWith("Terhubung")) {
+                screenStreamStatus = "Hubungkan sebagai Client ke Master sebelum membagikan layar."
+            } else {
+                val captureIntent = Intent(context, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_START
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, resultData)
+                    putExtra(ScreenCaptureService.EXTRA_HOST, peerIp)
+                    putExtra(ScreenCaptureService.EXTRA_TOKEN, peerToken)
+                }
+                try {
+                    context.startForegroundService(captureIntent)
+                    isSharingScreen = true
+                    screenStreamStatus = "Memulai screen share ke " + peerIp + "..."
+                } catch (error: Exception) {
+                    screenStreamStatus = error.message ?: "Gagal memulai screen share."
+                    isSharingScreen = false
+                }
+            }
+        } else {
+            screenStreamStatus = "Izin screen capture dibatalkan."
+        }
+    }
+
     val pickFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -372,8 +408,12 @@ fun InfinityApp() {
             }
         }
     }
-    DisposableEffect(transport) {
-        onDispose { transport.close() }
+    DisposableEffect(transport, screenStreamReceiver) {
+        onDispose {
+            transport.close()
+            screenStreamReceiver.close()
+            context.stopService(Intent(context, ScreenCaptureService::class.java))
+        }
     }
 
     MaterialTheme(colorScheme = darkColorScheme(
@@ -517,6 +557,15 @@ fun InfinityApp() {
                                                         val token = createPairToken()
                                                         pairingPayload = "INFINITY|1|$hostIp|${LanTransport.PORT}|$session|$token"
                                                         status = "Menyiapkan Host di $hostIp:${LanTransport.PORT}"
+                                                        remoteScreenFrame = null
+                                                        screenStreamReceiver.close()
+                                                        scope.launch {
+                                                            screenStreamReceiver.listen(
+                                                                token,
+                                                                { frame -> remoteScreenFrame = frame },
+                                                                { streamMessage -> screenStreamStatus = streamMessage }
+                                                            )
+                                                        }
                                                         scope.launch {
                                                             transport.host(session, token, { status = it }, { handlePeerMessage(it) })
                                                         }
@@ -610,7 +659,24 @@ fun InfinityApp() {
                         item { FeatureCard("Remote Input", "Event touchpad, gamepad, dan teks dikirim ke aplikasi pasangan. Tidak mengendalikan aplikasi eksternal.", Icons.Default.Gamepad) }
                         item { SystemMonitorCard(deviceStats) }
                         item { GamepadRelayCard(remotePadStatus, sendPadCommand) }
-                        item { FeatureCard("Screen & Audio Stream", "Streaming layar dan audio memerlukan persetujuan tangkap layar Android.", Icons.Default.Cast) }
+                        item {
+                            ScreenStreamCard(
+                                role = role,
+                                isConnected = status.startsWith("Terhubung"),
+                                remoteFrame = remoteScreenFrame,
+                                status = screenStreamStatus,
+                                isSharing = isSharingScreen,
+                                onStartShare = {
+                                    val projectionManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                                    screenConsentLauncher.launch(projectionManager.createScreenCaptureIntent())
+                                },
+                                onStopShare = {
+                                    context.stopService(Intent(context, ScreenCaptureService::class.java))
+                                    isSharingScreen = false
+                                    screenStreamStatus = "Screen share dihentikan."
+                                }
+                            )
+                        }
                         item { FeatureCard("Camera Link", "Akses kamera hanya setelah izin kamera diberikan.", Icons.Default.PhotoCamera) }
                     }
                 }
@@ -627,6 +693,57 @@ fun InfinityApp() {
 
 
 
+
+@Composable
+private fun ScreenStreamCard(
+    role: String,
+    isConnected: Boolean,
+    remoteFrame: Bitmap?,
+    status: String,
+    isSharing: Boolean,
+    onStartShare: () -> Unit,
+    onStopShare: () -> Unit
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Cast, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(9.dp))
+                Text("LAN SCREEN STREAM", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("Streaming layar satu arah dari Client ke Master. Resolusi dibatasi hingga sisi terpanjang 960 px dan sekitar 8 FPS.", color = Muted, fontSize = 12.sp)
+            if (remoteFrame != null) {
+                Image(
+                    bitmap = remoteFrame.asImageBitmap(),
+                    contentDescription = "Pratinjau layar dari perangkat Client",
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                Box(
+                    Modifier.fillMaxWidth().height(150.dp).background(Color(0xFF0B1727), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(if (role == "Master") "Pratinjau layar pasangan muncul di sini." else "Layar yang dibagikan akan tampil pada HP Master.", color = Muted, fontSize = 12.sp)
+                }
+            }
+            if (role == "Client") {
+                Button(onClick = onStartShare, enabled = isConnected && !isSharing, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.ScreenShare, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Bagikan layar • minta izin Android")
+                }
+                if (isSharing) {
+                    OutlinedButton(onClick = onStopShare, modifier = Modifier.fillMaxWidth()) { Text("Hentikan screen share") }
+                }
+            } else {
+                Text("HP Master menerima layar dari Client setelah QR pairing aktif. Tekan Stop dari HP Client untuk mengakhiri.", color = Muted, fontSize = 11.sp)
+            }
+            Text(status, color = Cyan, fontSize = 12.sp)
+            Text("Android menampilkan dialog izin dan notifikasi permanen selama capture. Konten layar ditransmisikan melalui LAN dan belum dienkripsi. Audio belum disertakan.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
+    }
+}
 
 @Composable
 private fun FileTransferCard(
