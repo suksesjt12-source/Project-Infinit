@@ -1,9 +1,11 @@
 package com.infinity.dual
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -207,6 +209,9 @@ fun InfinityApp() {
     var remoteScreenFrame by remember { mutableStateOf<Bitmap?>(null) }
     var screenStreamStatus by remember { mutableStateOf("Layar belum dibagikan.") }
     var isSharingScreen by remember { mutableStateOf(false) }
+    var remoteCameraFrame by remember { mutableStateOf<Bitmap?>(null) }
+    var cameraStreamStatus by remember { mutableStateOf("Kamera belum dibagikan.") }
+    var isSharingCamera by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val activity = context as? Activity
@@ -219,6 +224,7 @@ fun InfinityApp() {
     }
     val transport = remember { LanTransport() }
     val screenStreamReceiver = remember { ScreenStreamReceiver() }
+    val cameraStreamReceiver = remember { CameraStreamReceiver() }
     val scope = rememberCoroutineScope()
     val tabs = listOf("Beranda", "Hubungkan", "Tools")
 
@@ -341,6 +347,60 @@ fun InfinityApp() {
         }
     }
 
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            if (role == "Client" && peerIp.isNotBlank() && peerToken.isNotBlank() && status.startsWith("Terhubung")) {
+                try {
+                    val cameraIntent = Intent(context, CameraCaptureService::class.java).apply {
+                        action = CameraCaptureService.ACTION_START
+                        putExtra(CameraCaptureService.EXTRA_HOST, peerIp)
+                        putExtra(CameraCaptureService.EXTRA_TOKEN, peerToken)
+                    }
+                    context.startForegroundService(cameraIntent)
+                    isSharingCamera = true
+                    cameraStreamStatus = "Memulai camera stream ke $peerIp..."
+                } catch (error: Exception) {
+                    isSharingCamera = false
+                    cameraStreamStatus = error.message ?: "Gagal memulai camera stream."
+                }
+            } else {
+                cameraStreamStatus = "Hubungkan sebagai Client ke Master sebelum membagikan kamera."
+            }
+        } else {
+            cameraStreamStatus = "Izin kamera ditolak. Streaming tidak dimulai."
+        }
+    }
+
+    val startCameraShare: () -> Unit = {
+        if (role != "Client" || peerIp.isBlank() || peerToken.isBlank() || !status.startsWith("Terhubung")) {
+            cameraStreamStatus = "Hubungkan sebagai Client ke Master sebelum membagikan kamera."
+        } else if (context.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        } else {
+            try {
+                val cameraIntent = Intent(context, CameraCaptureService::class.java).apply {
+                    action = CameraCaptureService.ACTION_START
+                    putExtra(CameraCaptureService.EXTRA_HOST, peerIp)
+                    putExtra(CameraCaptureService.EXTRA_TOKEN, peerToken)
+                }
+                context.startForegroundService(cameraIntent)
+                isSharingCamera = true
+                cameraStreamStatus = "Memulai camera stream ke $peerIp..."
+            } catch (error: Exception) {
+                isSharingCamera = false
+                cameraStreamStatus = error.message ?: "Gagal memulai camera stream."
+            }
+        }
+    }
+
+    val stopCameraShare: () -> Unit = {
+        context.stopService(Intent(context, CameraCaptureService::class.java))
+        isSharingCamera = false
+        cameraStreamStatus = "Camera streaming dihentikan."
+    }
+
     val pickFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -408,11 +468,13 @@ fun InfinityApp() {
             }
         }
     }
-    DisposableEffect(transport, screenStreamReceiver) {
+    DisposableEffect(transport, screenStreamReceiver, cameraStreamReceiver) {
         onDispose {
             transport.close()
             screenStreamReceiver.close()
+            cameraStreamReceiver.close()
             context.stopService(Intent(context, ScreenCaptureService::class.java))
+            context.stopService(Intent(context, CameraCaptureService::class.java))
         }
     }
 
@@ -559,11 +621,21 @@ fun InfinityApp() {
                                                         status = "Menyiapkan Host di $hostIp:${LanTransport.PORT}"
                                                         remoteScreenFrame = null
                                                         screenStreamReceiver.close()
+                                                        cameraStreamReceiver.close()
+                                                        remoteCameraFrame = null
+                                                        cameraStreamStatus = "Menunggu Client membagikan kamera."
                                                         scope.launch {
                                                             screenStreamReceiver.listen(
                                                                 token,
                                                                 { frame -> remoteScreenFrame = frame },
                                                                 { streamMessage -> screenStreamStatus = streamMessage }
+                                                            )
+                                                        }
+                                                        scope.launch {
+                                                            cameraStreamReceiver.listen(
+                                                                token,
+                                                                { frame -> remoteCameraFrame = frame },
+                                                                { streamMessage -> cameraStreamStatus = streamMessage }
                                                             )
                                                         }
                                                         scope.launch {
@@ -597,9 +669,14 @@ fun InfinityApp() {
                                             onClick = {
                                                 transport.close()
                                                 screenStreamReceiver.close()
+                                                cameraStreamReceiver.close()
                                                 context.stopService(Intent(context, ScreenCaptureService::class.java))
+                                                context.stopService(Intent(context, CameraCaptureService::class.java))
                                                 isSharingScreen = false
+                                                isSharingCamera = false
                                                 remoteScreenFrame = null
+                                                remoteCameraFrame = null
+                                                cameraStreamStatus = "Camera stream dihentikan."
                                                 pairingPayload = null
                                                 peerSession = ""
                                                 peerToken = ""
@@ -636,7 +713,7 @@ fun InfinityApp() {
                                     messages.takeLast(6).forEach { Text(it, color = Muted, fontSize = 12.sp) }
 
                                     Text(
-                                        "Keamanan LAN: pairing memakai challenge-response; pesan, transfer file, dan frame screen streaming dilindungi AES-256-GCM dengan autentikasi integritas.",
+                                        "Keamanan LAN: pairing memakai challenge-response; pesan, transfer file, serta frame screen dan camera streaming dilindungi AES-256-GCM.",
                                         color = Muted,
                                         fontSize = 11.sp,
                                         lineHeight = 16.sp
@@ -682,7 +759,17 @@ fun InfinityApp() {
                                 }
                             )
                         }
-                        item { FeatureCard("Camera Link", "Akses kamera hanya setelah izin kamera diberikan.", Icons.Default.PhotoCamera) }
+                        item {
+                            CameraStreamCard(
+                                role = role,
+                                isConnected = status.startsWith("Terhubung"),
+                                remoteFrame = remoteCameraFrame,
+                                status = cameraStreamStatus,
+                                isSharing = isSharingCamera,
+                                onStartShare = startCameraShare,
+                                onStopShare = stopCameraShare
+                            )
+                        }
                     }
                 }
             }
@@ -746,6 +833,81 @@ private fun ScreenStreamCard(
             }
             Text(status, color = Cyan, fontSize = 12.sp)
             Text("Android menampilkan dialog izin dan notifikasi permanen selama capture. Frame layar dienkripsi AES-GCM saat dikirim melalui LAN. Audio belum disertakan.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+        }
+    }
+}
+
+@Composable
+private fun CameraStreamCard(
+    role: String,
+    isConnected: Boolean,
+    remoteFrame: Bitmap?,
+    status: String,
+    isSharing: Boolean,
+    onStartShare: () -> Unit,
+    onStopShare: () -> Unit
+) {
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = Cyan)
+                Spacer(Modifier.width(9.dp))
+                Text("LAN CAMERA STREAM", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+            Text(
+                "Streaming kamera satu arah dari Client ke Master. Resolusi dibatasi hingga sekitar 640×480 dan 5 FPS untuk mengurangi beban jaringan.",
+                color = Muted,
+                fontSize = 12.sp
+            )
+            if (remoteFrame != null) {
+                Image(
+                    bitmap = remoteFrame.asImageBitmap(),
+                    contentDescription = "Pratinjau kamera dari perangkat Client",
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                Box(
+                    Modifier.fillMaxWidth().height(150.dp).background(Color(0xFF0B1727), RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (role == "Master") "Pratinjau kamera Client muncul di sini."
+                        else "Kamera akan dibagikan ke HP Master setelah izin diberikan.",
+                        color = Muted,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            if (role == "Client") {
+                Button(
+                    onClick = onStartShare,
+                    enabled = isConnected && !isSharing,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Videocam, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Mulai camera stream • minta izin")
+                }
+                if (isSharing) {
+                    OutlinedButton(onClick = onStopShare, modifier = Modifier.fillMaxWidth()) {
+                        Text("Hentikan camera stream")
+                    }
+                }
+            } else {
+                Text(
+                    "HP Master menerima gambar dari Client setelah QR pairing aktif. Camera stream hanya aktif setelah pengguna Client memberi izin kamera dan menekan Mulai.",
+                    color = Muted,
+                    fontSize = 11.sp
+                )
+            }
+            Text(status, color = Cyan, fontSize = 12.sp)
+            Text(
+                "Android meminta izin kamera dan menampilkan notifikasi permanen selama capture. Frame dienkripsi AES-GCM. Kamera berhenti saat tombol Stop ditekan atau sesi ditutup.",
+                color = Muted,
+                fontSize = 11.sp,
+                lineHeight = 16.sp
+            )
         }
     }
 }
