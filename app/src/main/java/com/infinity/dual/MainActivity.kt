@@ -17,6 +17,7 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -253,6 +254,7 @@ fun InfinityApp() {
     val activity = context as? Activity
     var deviceStats by remember { mutableStateOf(readDeviceStats(context)) }
     var remoteDeviceStats by remember { mutableStateOf<DeviceStats?>(null) }
+    var connectionLatencyMs by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(Unit) {
         while (isActive) {
             deviceStats = readDeviceStats(context)
@@ -263,9 +265,12 @@ fun InfinityApp() {
     LaunchedEffect(status) {
         if (!status.startsWith("Terhubung")) {
             remoteDeviceStats = null
+            connectionLatencyMs = null
         } else {
             while (isActive && status.startsWith("Terhubung")) {
                 transport.send(encodeDeviceStats(readDeviceStats(context)))
+                val sentAt = SystemClock.elapsedRealtime()
+                transport.send("PING|$sentAt")
                 delay(5_000)
             }
         }
@@ -281,6 +286,18 @@ fun InfinityApp() {
         when (parts.firstOrNull()) {
             "DEVICE_STATS" -> {
                 remoteDeviceStats = decodeDeviceStats(parts)
+            }
+            "PING" -> {
+                if (parts.size == 2 && parts[1].toLongOrNull() != null) {
+                    scope.launch { transport.send("PONG|${parts[1]}") }
+                }
+            }
+            "PONG" -> {
+                if (parts.size == 2) {
+                    val sentAt = parts[1].toLongOrNull()
+                    val elapsed = sentAt?.let { SystemClock.elapsedRealtime() - it }
+                    if (elapsed != null && elapsed in 0..60_000) connectionLatencyMs = elapsed
+                }
             }
             "FILE_BEGIN" -> {
                 if (parts.size == 5 && incomingTransfer == null && pendingReceivedFile == null) {
@@ -607,7 +624,7 @@ fun InfinityApp() {
                             Text("INFINITY", fontSize = 29.sp, fontWeight = FontWeight.Black, color = Color.White)
                         }
                         Surface(color = Cyan.copy(alpha = .12f), shape = RoundedCornerShape(20.dp)) {
-                            Text("v1.6.0 • DEVICE SYNC", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("v1.7.0 • LINK DIAGNOSTICS", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -847,7 +864,7 @@ fun InfinityApp() {
                         item { KeyboardRelayCard { text -> sendPadCommand("KEY|$text") } }
                         item { FeatureCard("Remote Input", "Event touchpad, gamepad, dan teks dikirim ke aplikasi pasangan. Tidak mengendalikan aplikasi eksternal.", Icons.Default.Gamepad) }
                         item { SystemMonitorCard(deviceStats) }
-                        item { RemoteDeviceCard(remoteDeviceStats) }
+                        item { RemoteDeviceCard(remoteDeviceStats, connectionLatencyMs) }
                         item { GamepadRelayCard(remotePadStatus, sendPadCommand) }
                         item {
                             ScreenStreamCard(
@@ -1237,7 +1254,7 @@ private fun TouchpadRelayCard(status: String, onCommand: (String) -> Unit) {
 }
 
 @Composable
-private fun RemoteDeviceCard(stats: DeviceStats?) {
+private fun RemoteDeviceCard(stats: DeviceStats?, latencyMs: Long?) {
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1248,6 +1265,12 @@ private fun RemoteDeviceCard(stats: DeviceStats?) {
                     Text(stats?.model ?: "Belum ada data perangkat", color = Color.White, fontWeight = FontWeight.SemiBold)
                 }
             }
+            Text(
+                latencyMs?.let { "Kualitas koneksi • RTT $it ms" } ?: "Kualitas koneksi • mengukur...",
+                color = latencyMs?.let { if (it < 100) Cyan else if (it < 250) Color(0xFFFFC857) else Color(0xFFFF7A7A) } ?: Muted,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
             if (stats == null) {
                 Text("Hubungkan kedua HP. Status perangkat pasangan akan muncul otomatis.", color = Muted, fontSize = 12.sp)
             } else {
