@@ -13,6 +13,7 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 - Screen, camera and audio streams use HMAC challenge-response and AES-256-GCM protected frames.
 - Automatic LAN reconnect for the main messaging connection.
 - Local system monitor and automatic paired-device status sync (model, Android version, battery, available/total RAM and free storage).
+- Encrypted LAN round-trip latency (RTT) diagnostics, updated every five seconds while connected.
 - In-app touchpad/gamepad event relay and text relay.
 
 ## Pairing
@@ -22,6 +23,10 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 3. On the first phone, choose **Master** and select **Host / Buat QR**.
 4. On the second phone, choose **Client**, scan the Master QR and press **Connect**.
 5. Open **Tools** on either device to access the sharing panels.
+
+## Link diagnostics
+
+While connected, both devices exchange encrypted ping/pong messages every five seconds. The dashboard displays measured round-trip latency (RTT) in milliseconds. This measures app-to-app LAN response time, not internet speed.
 
 ## Paired-device status sync
 
