@@ -642,7 +642,7 @@ fun InfinityApp() {
                             Text("INFINITY", fontSize = 29.sp, fontWeight = FontWeight.Black, color = Color.White)
                         }
                         Surface(color = Cyan.copy(alpha = .12f), shape = RoundedCornerShape(20.dp)) {
-                            Text("v1.7.0 • LINK DIAGNOSTICS", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Text("v1.8.0 • TRANSFER CONTROL", color = Cyan, modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1151,7 +1151,7 @@ private fun FileTransferCard(
                 Text("LAN FILE TRANSFER", color = Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             Text("Kirim file langsung antar-HP melalui Wi-Fi lokal. Maksimal 8 MB per file.", color = Muted, fontSize = 12.sp)
-            Button(onClick = onPickFile, enabled = isConnected && !isSending && incomingName == null, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = onPickFile, enabled = isConnected && !isSending && !isReceiving && incomingName == null, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.UploadFile, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text(if (isSending) "Sedang mengirim..." else "Pilih & kirim file")
