@@ -636,7 +636,7 @@ fun InfinityApp() {
                                     messages.takeLast(6).forEach { Text(it, color = Muted, fontSize = 12.sp) }
 
                                     Text(
-                                        "Catatan keamanan: pairing memverifikasi token QR, tetapi pesan LAN pada versi ini belum dienkripsi. Gunakan hanya pada jaringan pribadi tepercaya dan jangan kirim informasi sensitif.",
+                                        "Keamanan koneksi utama: pairing memakai challenge-response dan pesan serta transfer file dilindungi AES-256-GCM. Screen streaming memakai kanal terpisah yang pada versi ini belum dienkripsi.",
                                         color = Muted,
                                         fontSize = 11.sp,
                                         lineHeight = 16.sp
@@ -788,7 +788,7 @@ private fun FileTransferCard(
                     Text("Simpan File")
                 }
             }
-            Text("Penerima memilih sendiri lokasi simpan. Data diperiksa dengan SHA-256 sebelum disimpan. File sementara dibatasi 8 MB dan transfer belum dienkripsi.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+            Text("Penerima memilih sendiri lokasi simpan. Data dilindungi AES-256-GCM saat dikirim dan diperiksa dengan SHA-256 sebelum disimpan. File sementara dibatasi 8 MB.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
         }
     }
 }
