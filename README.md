@@ -6,7 +6,7 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 
 - QR pairing with a short-lived session token.
 - Local TCP messaging with challenge-response authentication and AES-256-GCM.
-- File transfer with AES-GCM protection, SHA-256 verification and an 8 MB file limit.
+- File transfer with AES-GCM protection, SHA-256 verification, an 8 MB file limit and sender-side cancellation.
 - One-way screen sharing from Client to Master. Android MediaProjection permission and a persistent notification are required.
 - One-way camera sharing from Client to Master. Runtime camera permission and a persistent foreground-service notification are required.
 - One-way microphone audio from Client to Master. Runtime microphone permission and a persistent foreground-service notification are required.
@@ -23,6 +23,10 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 3. On the first phone, choose **Master** and select **Host / Buat QR**.
 4. On the second phone, choose **Client**, scan the Master QR and press **Connect**.
 5. Open **Tools** on either device to access the sharing panels.
+
+## File transfer cancellation
+
+The sender can cancel an active file transfer from the Tools tab. The receiver discards the incomplete file, and the sender also stops when the receiver cancels. Only fully received files with a matching SHA-256 checksum can be saved.
 
 ## Link diagnostics
 
