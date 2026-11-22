@@ -241,6 +241,8 @@ fun InfinityApp() {
     var fileTransferStatus by remember { mutableStateOf("Pilih file setelah kedua HP terhubung.") }
     var fileTransferProgress by remember { mutableStateOf(0f) }
     var isSendingFile by remember { mutableStateOf(false) }
+    var cancelFileTransferRequested by remember { mutableStateOf(false) }
+    var outgoingTransferId by remember { mutableStateOf<String?>(null) }
     var remoteScreenFrame by remember { mutableStateOf<Bitmap?>(null) }
     var screenStreamStatus by remember { mutableStateOf("Layar belum dibagikan.") }
     var isSharingScreen by remember { mutableStateOf(false) }
@@ -351,9 +353,17 @@ fun InfinityApp() {
                 }
             }
             "FILE_CANCEL" -> {
-                incomingTransfer = null
-                fileTransferProgress = 0f
-                fileTransferStatus = "Pengirim membatalkan transfer."
+                if (parts.size == 2 && outgoingTransferId != null && parts[1] == outgoingTransferId) {
+                    cancelFileTransferRequested = true
+                    fileTransferStatus = "Penerima membatalkan transfer."
+                } else {
+                    val active = incomingTransfer
+                    if (parts.size == 2 && active != null && parts[1] == active.id) {
+                        incomingTransfer = null
+                        fileTransferProgress = 0f
+                        fileTransferStatus = "Pengirim membatalkan transfer."
+                    }
+                }
             }
             "PAD" -> remotePadStatus = "Event dari perangkat pasangan: ${parts.drop(1).joinToString("|")}"
             "KEY" -> messages = messages + "Keyboard peer: ${incoming.removePrefix("KEY|")}"
@@ -517,6 +527,8 @@ fun InfinityApp() {
         if (uri != null) {
             scope.launch {
                 isSendingFile = true
+                cancelFileTransferRequested = false
+                outgoingTransferId = null
                 fileTransferProgress = 0f
                 fileTransferStatus = "Membaca file..."
                 var transferId: String? = null
@@ -524,6 +536,8 @@ fun InfinityApp() {
                     val (name, bytes) = withContext(Dispatchers.IO) { readPickedFile(context, uri) }
                     val id = UUID.randomUUID().toString()
                     transferId = id
+                    outgoingTransferId = id
+                    check(!cancelFileTransferRequested) { "Transfer dibatalkan oleh pengguna." }
                     val encodedName = Base64.encodeToString(name.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                     val checksum = sha256Hex(bytes)
                     check(transport.send("FILE_BEGIN|$id|$encodedName|${bytes.size}|$checksum")) {
@@ -532,6 +546,7 @@ fun InfinityApp() {
                     fileTransferStatus = "Mengirim $name • 0%"
                     var sequence = 0
                     for (offset in bytes.indices step FILE_CHUNK_BYTES) {
+                        check(!cancelFileTransferRequested) { "Transfer dibatalkan." }
                         val end = minOf(offset + FILE_CHUNK_BYTES, bytes.size)
                         val chunk = bytes.copyOfRange(offset, end)
                         val encodedChunk = Base64.encodeToString(chunk, Base64.NO_WRAP)
@@ -544,13 +559,16 @@ fun InfinityApp() {
                             fileTransferStatus = "Mengirim $name • ${(fileTransferProgress * 100).toInt()}%"
                         }
                     }
+                    check(!cancelFileTransferRequested) { "Transfer dibatalkan." }
                     check(transport.send("FILE_END|$id")) { "Koneksi terputus sebelum transfer selesai." }
                     fileTransferProgress = 1f
                     fileTransferStatus = "Pengiriman $name selesai. Menunggu verifikasi di HP penerima."
                 } catch (error: Exception) {
                     transferId?.let { transport.send("FILE_CANCEL|$it") }
-                    fileTransferStatus = error.message ?: "Transfer file gagal."
+                    fileTransferStatus = if (cancelFileTransferRequested) "Transfer dibatalkan." else (error.message ?: "Transfer file gagal.")
                 } finally {
+                    outgoingTransferId = null
+                    cancelFileTransferRequested = false
                     isSendingFile = false
                 }
             }
@@ -857,6 +875,7 @@ fun InfinityApp() {
                                 incomingName = pendingReceivedFile?.name,
                                 incomingSize = pendingReceivedFile?.bytes?.size,
                                 onPickFile = { pickFileLauncher.launch(arrayOf("*/*")) },
+                                onCancelSend = { if (isSendingFile) { cancelFileTransferRequested = true; fileTransferStatus = "Membatalkan transfer..." } },
                                 onSaveIncoming = { pendingReceivedFile?.let { saveReceivedLauncher.launch(it.name) } }
                             )
                         }
@@ -1110,6 +1129,7 @@ private fun FileTransferCard(
     incomingName: String?,
     incomingSize: Int?,
     onPickFile: () -> Unit,
+    onCancelSend: () -> Unit,
     onSaveIncoming: () -> Unit
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
@@ -1127,6 +1147,13 @@ private fun FileTransferCard(
             }
             if (isSending || progress > 0f) {
                 LinearProgressIndicator(progress = progress.coerceIn(0f, 1f), modifier = Modifier.fillMaxWidth())
+            }
+            if (isSending) {
+                OutlinedButton(onClick = onCancelSend, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Cancel, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Batalkan pengiriman")
+                }
             }
             Text(status, color = Cyan, fontSize = 12.sp, lineHeight = 17.sp)
             if (incomingName != null && incomingSize != null) {
