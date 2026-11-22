@@ -22,7 +22,9 @@ import javax.crypto.spec.SecretKeySpec
 
 /**
  * Receives an explicitly started camera stream from the paired Client.
- * A fresh HMAC challenge authenticates the peer and JPEG frames use AES-GCM.
+ * The listener stays open for subsequent start/stop cycles during the same
+ * Master session. A fresh HMAC challenge authenticates each connection and
+ * JPEG frames use AES-GCM.
  */
 class CameraStreamReceiver {
     companion object {
@@ -45,7 +47,6 @@ class CameraStreamReceiver {
         onStatus: (String) -> Unit
     ) = withContext(Dispatchers.IO) {
         var listener: ServerSocket? = null
-        var client: Socket? = null
         closed = false
         try {
             val created = ServerSocket()
@@ -57,68 +58,91 @@ class CameraStreamReceiver {
                 onStatus("Menunggu camera stream pada port $PORT")
             }
 
-            val connected = created.accept()
-            client = connected
-            peer = connected
-            connected.tcpNoDelay = true
-            connected.soTimeout = 15_000
+            // Keep the listener alive after Stop so Client can start sharing again.
+            while (!closed && !created.isClosed) {
+                var connected: Socket? = null
+                try {
+                    val accepted = created.accept()
+                    connected = accepted
+                    peer = accepted
+                    accepted.tcpNoDelay = true
+                    accepted.soTimeout = 15_000
 
-            val input = DataInputStream(BufferedInputStream(connected.getInputStream()))
-            val output = connected.getOutputStream()
+                    val input = DataInputStream(BufferedInputStream(accepted.getInputStream()))
+                    val output = accepted.getOutputStream()
 
-            val challenge = newChallenge()
-            output.write("CAM_CHALLENGE|$challenge\n".toByteArray(Charsets.UTF_8))
-            output.flush()
+                    val challenge = newChallenge()
+                    output.write("CAM_CHALLENGE|$challenge\n".toByteArray(Charsets.UTF_8))
+                    output.flush()
 
-            val hello = readProtocolLine(input)
-            if (!validClientProof(hello, token, challenge)) {
-                output.write("REJECT\n".toByteArray(Charsets.UTF_8))
-                output.flush()
-                throw IOException("Autentikasi camera stream ditolak.")
-            }
+                    val hello = readProtocolLine(input)
+                    if (!validClientProof(hello, token, challenge)) {
+                        output.write("REJECT\n".toByteArray(Charsets.UTF_8))
+                        output.flush()
+                        throw IOException("Autentikasi camera stream ditolak.")
+                    }
 
-            val serverProof = handshakeProof(token, "SERVER", challenge)
-            output.write("CAM_OK|$serverProof\n".toByteArray(Charsets.UTF_8))
-            output.flush()
+                    val serverProof = handshakeProof(token, "SERVER", challenge)
+                    output.write("CAM_OK|$serverProof\n".toByteArray(Charsets.UTF_8))
+                    output.flush()
 
-            val key = deriveKey(token)
-            connected.soTimeout = 0
-            withContext(Dispatchers.Main) {
-                onStatus("Camera streaming terenkripsi AES-GCM aktif")
-            }
+                    val key = deriveKey(token)
+                    accepted.soTimeout = 0
+                    withContext(Dispatchers.Main) {
+                        onStatus("Camera streaming terenkripsi AES-GCM aktif")
+                    }
 
-            while (!closed && !connected.isClosed) {
-                val frameSize = input.readInt()
-                if (frameSize !in 1..MAX_ENCRYPTED_FRAME_BYTES) {
-                    throw IOException("Ukuran frame kamera tidak valid.")
+                    while (!closed && !accepted.isClosed) {
+                        val frameSize = input.readInt()
+                        if (frameSize !in 1..MAX_ENCRYPTED_FRAME_BYTES) {
+                            throw IOException("Ukuran frame kamera tidak valid.")
+                        }
+                        val packet = ByteArray(frameSize)
+                        input.readFully(packet)
+                        val jpeg = decryptFrame(packet, key)
+                        if (jpeg.isEmpty() || jpeg.size > MAX_FRAME_BYTES) {
+                            throw IOException("Data gambar kamera melebihi batas.")
+                        }
+                        val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
+                        withContext(Dispatchers.Main) {
+                            if (!closed) {
+                                onFrame(bitmap)
+                                onStatus("Camera streaming aktif • terenkripsi AES-GCM")
+                            } else {
+                                bitmap.recycle()
+                            }
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (!closed && !created.isClosed) {
+                        withContext(Dispatchers.Main) {
+                            onStatus("Camera stream berhenti: ${error.message ?: "koneksi terputus"}")
+                        }
+                    }
+                } finally {
+                    val ended = connected
+                    if (ended != null) {
+                        runCatching { ended.close() }
+                        if (peer === ended) peer = null
+                    }
                 }
-                val packet = ByteArray(frameSize)
-                input.readFully(packet)
-                val jpeg = decryptFrame(packet, key)
-                if (jpeg.isEmpty() || jpeg.size > MAX_FRAME_BYTES) {
-                    throw IOException("Data gambar kamera melebihi batas.")
-                }
-                val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: continue
-                withContext(Dispatchers.Main) {
-                    if (!closed) {
-                        onFrame(bitmap)
-                        onStatus("Camera streaming aktif • terenkripsi AES-GCM")
-                    } else {
-                        bitmap.recycle()
+
+                if (!closed && !created.isClosed) {
+                    withContext(Dispatchers.Main) {
+                        onStatus("Client kamera terputus • menunggu Mulai kembali")
                     }
                 }
             }
         } catch (error: Exception) {
             if (!closed) {
                 withContext(Dispatchers.Main) {
-                    onStatus("Camera stream berhenti: ${error.message ?: "koneksi terputus"}")
+                    onStatus("Penerima kamera berhenti: ${error.message ?: "kesalahan jaringan"}")
                 }
             }
         } finally {
-            runCatching { client?.close() }
             runCatching { listener?.close() }
-            if (peer === client) peer = null
             if (server === listener) server = null
+            peer = null
         }
     }
 
