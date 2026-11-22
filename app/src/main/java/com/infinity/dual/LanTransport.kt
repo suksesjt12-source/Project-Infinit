@@ -41,22 +41,24 @@ class LanTransport {
         var peer: Socket? = null
         explicitlyClosed = false
         try {
-            listener = ServerSocket()
-            listener.reuseAddress = true
-            listener.bind(InetSocketAddress(PORT))
-            server = listener
+            val serverSocket = ServerSocket()
+            listener = serverSocket
+            serverSocket.reuseAddress = true
+            serverSocket.bind(InetSocketAddress(PORT))
+            server = serverSocket
             withContext(Dispatchers.Main) {
                 onStatus("Menunggu client • port $PORT")
             }
 
-            peer = listener.accept()
-            peer.tcpNoDelay = true
-            peer.soTimeout = HANDSHAKE_TIMEOUT_MS
-            val reader = BufferedReader(InputStreamReader(peer.getInputStream(), Charsets.UTF_8))
+            val acceptedPeer = serverSocket.accept()
+            peer = acceptedPeer
+            acceptedPeer.tcpNoDelay = true
+            acceptedPeer.soTimeout = HANDSHAKE_TIMEOUT_MS
+            val reader = BufferedReader(InputStreamReader(acceptedPeer.getInputStream(), Charsets.UTF_8))
             val hello = reader.readLine()
             if (!isValidHandshake(hello, expectedSession, expectedToken)) {
                 runCatching {
-                    val reject = BufferedWriter(OutputStreamWriter(peer.getOutputStream(), Charsets.UTF_8))
+                    val reject = BufferedWriter(OutputStreamWriter(acceptedPeer.getOutputStream(), Charsets.UTF_8))
                     reject.write("REJECT")
                     reject.newLine()
                     reject.flush()
@@ -64,18 +66,19 @@ class LanTransport {
                 throw IOException("Pairing ditolak. QR tidak cocok atau sudah diganti.")
             }
 
-            val output = BufferedWriter(OutputStreamWriter(peer.getOutputStream(), Charsets.UTF_8))
+            val output = BufferedWriter(OutputStreamWriter(acceptedPeer.getOutputStream(), Charsets.UTF_8))
             output.write("WELCOME|$expectedSession")
             output.newLine()
             output.flush()
 
-            peer.soTimeout = 0
-            socket = peer
+            acceptedPeer.soTimeout = 0
+            socket = acceptedPeer
             writer = output
+            val peerAddress = acceptedPeer.inetAddress.hostAddress ?: "perangkat lokal"
             withContext(Dispatchers.Main) {
-                onStatus("Terhubung: ${peer.inetAddress.hostAddress}")
+                onStatus("Terhubung: $peerAddress")
             }
-            listen(peer, reader, onMessage, onStatus)
+            listen(acceptedPeer, reader, onMessage, onStatus)
         } catch (error: Exception) {
             if (!explicitlyClosed) {
                 withContext(Dispatchers.Main) {
@@ -101,13 +104,14 @@ class LanTransport {
         var peer: Socket? = null
         explicitlyClosed = false
         try {
-            peer = Socket()
-            peer.tcpNoDelay = true
-            peer.connect(InetSocketAddress(host.trim(), PORT), HANDSHAKE_TIMEOUT_MS)
-            peer.soTimeout = HANDSHAKE_TIMEOUT_MS
+            val connectedPeer = Socket()
+            peer = connectedPeer
+            connectedPeer.tcpNoDelay = true
+            connectedPeer.connect(InetSocketAddress(host.trim(), PORT), HANDSHAKE_TIMEOUT_MS)
+            connectedPeer.soTimeout = HANDSHAKE_TIMEOUT_MS
 
-            val reader = BufferedReader(InputStreamReader(peer.getInputStream(), Charsets.UTF_8))
-            val output = BufferedWriter(OutputStreamWriter(peer.getOutputStream(), Charsets.UTF_8))
+            val reader = BufferedReader(InputStreamReader(connectedPeer.getInputStream(), Charsets.UTF_8))
+            val output = BufferedWriter(OutputStreamWriter(connectedPeer.getOutputStream(), Charsets.UTF_8))
             output.write("HELLO|$expectedSession|$expectedToken")
             output.newLine()
             output.flush()
@@ -117,13 +121,13 @@ class LanTransport {
                 throw IOException("Pairing ditolak oleh perangkat Master.")
             }
 
-            peer.soTimeout = 0
-            socket = peer
+            connectedPeer.soTimeout = 0
+            socket = connectedPeer
             writer = output
             withContext(Dispatchers.Main) {
                 onStatus("Terhubung ke $host")
             }
-            listen(peer, reader, onMessage, onStatus)
+            listen(connectedPeer, reader, onMessage, onStatus)
         } catch (error: Exception) {
             if (!explicitlyClosed) {
                 withContext(Dispatchers.Main) {
