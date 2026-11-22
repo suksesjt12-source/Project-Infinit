@@ -636,7 +636,7 @@ fun InfinityApp() {
                                     messages.takeLast(6).forEach { Text(it, color = Muted, fontSize = 12.sp) }
 
                                     Text(
-                                        "Keamanan koneksi utama: pairing memakai challenge-response dan pesan serta transfer file dilindungi AES-256-GCM. Screen streaming memakai kanal terpisah yang pada versi ini belum dienkripsi.",
+                                        "Keamanan LAN: pairing memakai challenge-response; pesan, transfer file, dan frame screen streaming dilindungi AES-256-GCM dengan autentikasi integritas.",
                                         color = Muted,
                                         fontSize = 11.sp,
                                         lineHeight = 16.sp
@@ -745,7 +745,7 @@ private fun ScreenStreamCard(
                 Text("HP Master menerima layar dari Client setelah QR pairing aktif. Tekan Stop dari HP Client untuk mengakhiri.", color = Muted, fontSize = 11.sp)
             }
             Text(status, color = Cyan, fontSize = 12.sp)
-            Text("Android menampilkan dialog izin dan notifikasi permanen selama capture. Konten layar ditransmisikan melalui LAN dan belum dienkripsi. Audio belum disertakan.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+            Text("Android menampilkan dialog izin dan notifikasi permanen selama capture. Frame layar dienkripsi AES-GCM saat dikirim melalui LAN. Audio belum disertakan.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
         }
     }
 }
