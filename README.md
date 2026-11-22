@@ -26,7 +26,7 @@ PROJECT INFINITY connects two Android phones over the same local Wi-Fi or hotspo
 
 ## File transfer cancellation
 
-The sender can cancel an active file transfer from the Tools tab. The receiver discards the incomplete file, and the sender also stops when the receiver cancels. Only fully received files with a matching SHA-256 checksum can be saved.
+Either device can cancel an active file transfer from the Tools tab. The other device is notified and stops the matching transfer; incomplete data is discarded. Only fully received files with a matching SHA-256 checksum can be saved.
 
 ## Link diagnostics
 
