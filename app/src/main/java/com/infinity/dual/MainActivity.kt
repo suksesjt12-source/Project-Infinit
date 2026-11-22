@@ -596,10 +596,15 @@ fun InfinityApp() {
                                         OutlinedButton(
                                             onClick = {
                                                 transport.close()
+                                                screenStreamReceiver.close()
+                                                context.stopService(Intent(context, ScreenCaptureService::class.java))
+                                                isSharingScreen = false
+                                                remoteScreenFrame = null
                                                 pairingPayload = null
                                                 peerSession = ""
                                                 peerToken = ""
                                                 status = "Koneksi ditutup"
+                                                screenStreamStatus = "Screen stream dihentikan."
                                             },
                                             modifier = Modifier.weight(1f)
                                         ) { Text("Putuskan") }
